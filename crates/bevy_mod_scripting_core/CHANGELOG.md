@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/mgi388/bevy_mod_scripting/compare/bevy_mod_scripting_core-v0.11.1...bevy_mod_scripting_core-v0.11.2) - 2025-04-04
+
+### Added
+
+- add option to emit response event on each callback  & `RunScriptCallback` command for "once-off" callbacks ([#403](https://github.com/mgi388/bevy_mod_scripting/pull/403))
+
+### Other
+
+- refactor `ReflectReference` internally ([#406](https://github.com/mgi388/bevy_mod_scripting/pull/406))
+- reduces size of `ScriptValue` to 64 bytes, moves some dynamic function methods into function info ([#404](https://github.com/mgi388/bevy_mod_scripting/pull/404))
+
 ## [0.11.0](https://github.com/makspll/bevy_mod_scripting/compare/bevy_mod_scripting_core-v0.10.0...bevy_mod_scripting_core-v0.11.0) - 2025-03-29
 
 ### Added
