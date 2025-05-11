@@ -279,6 +279,13 @@ You can opt-in to receive this argument in your own function definitions by addi
 </div>
 <p>In this context <code>overridable</code> indicates whether language implementations will look for a specific function on your type before looking at the generic <code>ReflectReference</code> namespace. You can still remove the existing registration for these functions on the <code>ReflectReference</code> namespace if you want to replace them with your own implementation.</p>
 <p>Note the <code>ReflectReference</code> namespace is special, in that functions defined on it, act like a fallback and hence apply to ALL references.</p>
+<h2 id="globals"><a class="header" href="#globals">Globals</a></h2>
+<p>By default, each type registered with the type registry, has the following set:</p>
+<ul>
+<li>a static reference in the global namespace, i.e.: <code>Vec3</code>, <code>Mat3</code></li>
+<li>an entry in the <code>types</code> global type cache, i.e.: <code>types.Vec3</code>, <code>types.Mat3</code></li>
+</ul>
+<p>You can filter the types included by customising the <code>CoreScriptGlobalsPlugin</code></p>
 
                     </main>
 
