@@ -1,13 +1,16 @@
 //! A visualiser for bevy system schedules, as well as utilities for querying them via reflection
-use std::ops::Deref;
-use std::{any::TypeId, borrow::Cow};
+use std::{any::TypeId, borrow::Cow, ops::Deref};
 
-use bevy::ecs::schedule::{
-    InternedScheduleLabel, InternedSystemSet, NodeId, Schedule, ScheduleLabel, SystemSet,
+use bevy::{
+    ecs::{
+        schedule::{
+            InternedScheduleLabel, InternedSystemSet, NodeId, Schedule, ScheduleLabel, SystemSet,
+        },
+        system::{System, SystemInput},
+    },
+    platform::collections::{HashMap, HashSet},
+    reflect::Reflect,
 };
-use bevy::ecs::system::{System, SystemInput};
-use bevy::reflect::Reflect;
-use bevy::utils::hashbrown::{HashMap, HashSet};
 use dot_writer::{Attributes, DotWriter};
 
 #[derive(Reflect, Debug, Clone)]
@@ -148,7 +151,7 @@ impl ReflectSystemSet {
     pub fn from_set(set: &dyn SystemSet, node_id: NodeId) -> Self {
         ReflectSystemSet {
             node_id: ReflectNodeId(node_id),
-            debug: format!("{:?}", set),
+            debug: format!("{set:?}"),
             type_id: set.system_type(),
         }
     }
@@ -283,7 +286,7 @@ pub fn schedule_to_reflect_graph(schedule: &Schedule) -> ReflectSystemGraph {
 
     let dependencies = dependency
         .all_edges()
-        .map(|(from, to, _)| Edge {
+        .map(|(from, to)| Edge {
             from: ReflectNodeId(from),
             to: ReflectNodeId(to),
         })
@@ -291,7 +294,7 @@ pub fn schedule_to_reflect_graph(schedule: &Schedule) -> ReflectSystemGraph {
 
     let hierarchy = hierarchy
         .all_edges()
-        .map(|(from, to, _)| Edge {
+        .map(|(from, to)| Edge {
             from: ReflectNodeId(from),
             to: ReflectNodeId(to),
         })
@@ -466,13 +469,7 @@ pub struct Edge {
 
 #[cfg(test)]
 mod test {
-    use bevy::{
-        app::Update,
-        ecs::{
-            schedule::{IntoSystemConfigs, IntoSystemSetConfigs},
-            world::World,
-        },
-    };
+    use bevy::{app::Update, ecs::world::World, prelude::IntoScheduleConfigs};
 
     use super::*;
 

@@ -245,7 +245,7 @@ impl<'a> Section<'a> {
         }
     }
 
-    pub(crate) fn section_items(&self) -> Vec<SectionItem> {
+    pub(crate) fn section_items(&self) -> Vec<SectionItem<'_>> {
         match self.data {
             SectionData::Summary { .. } => {
                 let title = self.title().clone();
@@ -702,7 +702,7 @@ fn build_lad_function_argument_row(
         .name
         .as_ref()
         .cloned()
-        .unwrap_or_else(|| Cow::Owned(format!("arg{}", idx)));
+        .unwrap_or_else(|| Cow::Owned(format!("arg{idx}")));
 
     builder.row(markdown_vec![
         Markdown::new_paragraph(arg_name).bold(),
