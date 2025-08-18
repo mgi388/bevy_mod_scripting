@@ -36,11 +36,23 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../../searchindex.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc.js"></script>
     </head>
     <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
     <div id="body-container">
         <!-- Work around some values being stored in localStorage wrapped in quotes -->
         <script>
@@ -81,10 +93,13 @@
                 sidebar = sidebar || 'visible';
             } else {
                 sidebar = 'hidden';
+                sidebar_toggle.checked = false;
             }
-            sidebar_toggle.checked = sidebar === 'visible';
-            html.classList.remove('sidebar-visible');
-            html.classList.add("sidebar-" + sidebar);
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
         </script>
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
@@ -118,7 +133,7 @@
                             <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
                         </ul>
-                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
                             <i class="fa fa-search"></i>
                         </button>
                     </div>
@@ -132,7 +147,7 @@
                         <a href="https://github.com/makspll/bevy_mod_scripting" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/makspll/bevy_mod_scripting/edit/main/docs/src/core_bindings/types/easefunction.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/makspll/bevy_mod_scripting/edit/main/docs/src/core_bindings/types/easefunction.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -141,7 +156,12 @@
 
                 <div id="search-wrapper" class="hidden">
                     <form id="searchbar-outer" class="searchbar-outer">
-                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
                     </form>
                     <div id="searchresults-outer" class="searchresults-outer hidden">
                         <div id="searchresults-header" class="searchresults-header"></div>
@@ -175,6 +195,12 @@
 <h3 id="quinticin"><a class="header" href="#quinticin">QuinticIn</a></h3>
 <h3 id="quinticout"><a class="header" href="#quinticout">QuinticOut</a></h3>
 <h3 id="quinticinout"><a class="header" href="#quinticinout">QuinticInOut</a></h3>
+<h3 id="smoothstepin"><a class="header" href="#smoothstepin">SmoothStepIn</a></h3>
+<h3 id="smoothstepout"><a class="header" href="#smoothstepout">SmoothStepOut</a></h3>
+<h3 id="smoothstep"><a class="header" href="#smoothstep">SmoothStep</a></h3>
+<h3 id="smootherstepin"><a class="header" href="#smootherstepin">SmootherStepIn</a></h3>
+<h3 id="smootherstepout"><a class="header" href="#smootherstepout">SmootherStepOut</a></h3>
+<h3 id="smootherstep"><a class="header" href="#smootherstep">SmootherStep</a></h3>
 <h3 id="sinein"><a class="header" href="#sinein">SineIn</a></h3>
 <h3 id="sineout"><a class="header" href="#sineout">SineOut</a></h3>
 <h3 id="sineinout"><a class="header" href="#sineinout">SineInOut</a></h3>
@@ -196,6 +222,7 @@
 <h3 id="steps"><a class="header" href="#steps">Steps</a></h3>
 <ol>
 <li>usize</li>
+<li>bevy_math::curve::easing::JumpAt</li>
 </ol>
 <h3 id="elastic"><a class="header" href="#elastic">Elastic</a></h3>
 <ol>
@@ -204,6 +231,31 @@
 <h2 id="description"><a class="header" href="#description">Description</a></h2>
 <blockquote>
 <p>Curve functions over the <a href="%60Interval::UNIT%60">unit interval</a>, commonly used for easing transitions.</p>
+<p><code>EaseFunction</code> can be used on its own to interpolate between <code>0.0</code> and <code>1.0</code>.
+It can also be combined with [<code>EasingCurve</code>] to interpolate between other
+intervals and types, including vectors and rotations.</p>
+<h1 id="example"><a class="header" href="#example">Example</a></h1>
+<p><a href="EaseFunction::sample"><code>sample</code></a> the smoothstep function at various points. This will return <code>None</code>
+if the parameter is outside the unit interval.</p>
+<pre><code># use bevy_math::prelude::*;
+let f = EaseFunction::SmoothStep;
+
+assert_eq!(f.sample(-1.0), None);
+assert_eq!(f.sample(0.0), Some(0.0));
+assert_eq!(f.sample(0.5), Some(0.5));
+assert_eq!(f.sample(1.0), Some(1.0));
+assert_eq!(f.sample(2.0), None);
+</code></pre>
+<p><a href="EaseFunction::sample_clamped"><code>sample_clamped</code></a> will clamp the parameter to the unit interval, so it
+always returns a value.</p>
+<pre><code># use bevy_math::prelude::*;
+# let f = EaseFunction::SmoothStep;
+assert_eq!(f.sample_clamped(-1.0), 0.0);
+assert_eq!(f.sample_clamped(0.0), 0.0);
+assert_eq!(f.sample_clamped(0.5), 0.5);
+assert_eq!(f.sample_clamped(1.0), 1.0);
+assert_eq!(f.sample_clamped(2.0), 1.0);
+</code></pre>
 </blockquote>
 <h2 id="associated-functions"><a class="header" href="#associated-functions">Associated Functions</a></h2>
 <p>For function details and documentation, click on the function link.</p>
@@ -216,7 +268,7 @@
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../../core_bindings/types/compassquadrant/eq.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../../core_bindings/types/compassquadrant/opposite.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -230,7 +282,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../../core_bindings/types/compassquadrant/eq.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../../core_bindings/types/compassquadrant/opposite.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
@@ -259,6 +311,7 @@
 
         <!-- Custom JS scripts -->
         <script src="../../multi-code-block.js"></script>
+
 
 
     </div>
