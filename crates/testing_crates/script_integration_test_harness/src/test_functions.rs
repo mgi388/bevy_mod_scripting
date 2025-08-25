@@ -3,22 +3,21 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use bevy::{
-    app::App,
-    ecs::component::ComponentId,
-    prelude::{Entity, World},
-    reflect::{Reflect, TypeRegistration},
+use ::{
+    bevy_app::App,
+    bevy_ecs::{component::ComponentId, entity::Entity, world::World},
+    bevy_reflect::{Reflect, TypeRegistration},
 };
 use bevy_mod_scripting_core::{
     asset::Language,
     bindings::{
+        DynamicScriptFunction, ReflectReference, ScriptComponentRegistration,
+        ScriptResourceRegistration, ScriptTypeRegistration, ScriptValue,
         function::{
             namespace::{GlobalNamespace, NamespaceBuilder},
             script_function::{DynamicScriptFunctionMut, FunctionCallContext},
         },
         pretty_print::DisplayWithWorld,
-        DynamicScriptFunction, ReflectReference, ScriptComponentRegistration,
-        ScriptResourceRegistration, ScriptTypeRegistration, ScriptValue,
     },
     error::InteropError,
 };
@@ -98,7 +97,7 @@ pub fn register_test_functions(world: &mut App) {
                     Ok(_) => {
                         return Err(InteropError::external_error(
                             "Expected function to throw error, but it did not.".into(),
-                        ))
+                        ));
                     }
                     Err(e) => e.display_with_world(world.clone()),
                 };

@@ -1,8 +1,8 @@
 [package]
 name = "bevy_mod_scripting_lua"
-version = "0.15.0"
+version = "0.15.1"
 authors = ["Maksymilian Mozolewski <makspl17@gmail.com>"]
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Necessary functionality for Lua support with bevy_mod_scripting"
 repository = "https://github.com/makspll/bevy_mod_scripting"
@@ -37,9 +37,13 @@ name = "bevy_mod_scripting_lua"
 path = "src/lib.rs"
 
 [dependencies]
-bevy = { workspace = true, default-features = false }
+bevy_app = { workspace = true, default-features = false, features = [] }
+bevy_ecs = { workspace = true, default-features = false, features = [] }
+bevy_asset = { workspace = true, default-features = false, features = [] }
+bevy_log = { workspace = true, default-features = false, features = [] }
+bevy_platform = { workspace = true, default-features = false, features = [] }
 bevy_mod_scripting_core = { workspace = true, features = ["mlua_impls"] }
-mlua = { version = "0.10", features = ["vendored", "send", "macros"] }
+mlua = { workspace = true, features = ["vendored", "send", "macros"] }
 profiling = { workspace = true }
 
 [lints]

@@ -1,34 +1,36 @@
 //! Parsing definitions for the LAD (Language Agnostic Decleration) file format.
 pub mod plugin;
 
-use bevy::{ecs::world::World, log, platform::collections::HashSet};
+use std::{
+    any::TypeId,
+    borrow::Cow,
+    cmp::{max, min},
+    ffi::OsString,
+    path::PathBuf,
+};
+
+use bevy_ecs::world::World;
+use bevy_log::warn;
 use bevy_mod_scripting_core::{
     bindings::{
+        MarkAsCore, MarkAsGenerated, MarkAsSignificant, ReflectReference,
         function::{
             namespace::Namespace,
             script_function::{
                 DynamicScriptFunction, DynamicScriptFunctionMut, FunctionCallContext,
             },
         },
-        MarkAsCore, MarkAsGenerated, MarkAsSignificant, ReflectReference,
     },
     docgen::{
+        TypedThrough,
         info::FunctionInfo,
         typed_through::{ThroughTypeInfo, TypedWrapperKind, UntypedWrapperKind},
-        TypedThrough,
     },
     match_by_type,
 };
+use bevy_platform::collections::{HashMap, HashSet};
 use bevy_reflect::{NamedField, TypeInfo, TypeRegistry, Typed, UnnamedField};
 use ladfile::*;
-use std::{
-    any::TypeId,
-    borrow::Cow,
-    cmp::{max, min},
-    collections::HashMap,
-    ffi::OsString,
-    path::PathBuf,
-};
 
 /// We can assume that the types here will be either primitives
 /// or reflect types, as the rest will be covered by typed wrappers
@@ -492,10 +494,9 @@ impl<'t> LadFileBuilder<'t> {
                     if let Some(t) = file.types.get_mut(type_id) {
                         t.associated_functions.push(function_id.clone());
                     } else {
-                        log::warn!(
+                        warn!(
                             "Function {} is on type {}, but the type is not registered in the LAD file.",
-                            function_id,
-                            type_id
+                            function_id, type_id
                         );
                     }
                 }
@@ -855,11 +856,11 @@ mod test {
 
     use bevy_mod_scripting_core::{
         bindings::{
+            Union, Val,
             function::{
                 from::Ref,
                 namespace::{GlobalNamespace, IntoNamespace},
             },
-            Union, Val,
         },
         docgen::info::GetFunctionInfo,
     };

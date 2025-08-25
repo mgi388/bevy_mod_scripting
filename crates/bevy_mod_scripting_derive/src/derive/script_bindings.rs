@@ -1,6 +1,6 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote_spanned};
-use syn::{spanned::Spanned, ItemImpl};
+use syn::{ItemImpl, spanned::Spanned};
 
 use super::{impl_fn_to_namespace_builder_registration, is_public_impl};
 
@@ -54,7 +54,7 @@ pub fn script_bindings(
     let mark_as_generated = if args.generated {
         quote_spanned! {impl_span=>
 
-            let registry = world.get_resource_or_init::<bevy::ecs::reflect::AppTypeRegistry>();
+            let registry = world.get_resource_or_init::<AppTypeRegistry>();
             let mut registry = registry.write();
             registry.register_type_data::<#type_ident_with_generics, #bms_core_path::bindings::MarkAsGenerated>();
         }
@@ -64,7 +64,7 @@ pub fn script_bindings(
 
     let mark_as_core = if bms_core_path.is_ident("crate") || args.core {
         quote_spanned! {impl_span=>
-            let registry = world.get_resource_or_init::<bevy::ecs::reflect::AppTypeRegistry>();
+            let registry = world.get_resource_or_init::<AppTypeRegistry>();
             let mut registry = registry.write();
             registry.register_type_data::<#type_ident_with_generics, #bms_core_path::bindings::MarkAsCore>();
         }
@@ -74,7 +74,7 @@ pub fn script_bindings(
 
     let mark_as_significant = if args.significant {
         quote_spanned! {impl_span=>
-            let registry = world.get_resource_or_init::<bevy::ecs::reflect::AppTypeRegistry>();
+            let registry = world.get_resource_or_init::<AppTypeRegistry>();
             let mut registry = registry.write();
             registry.register_type_data::<#type_ident_with_generics, #bms_core_path::bindings::MarkAsSignificant>();
         }
@@ -83,7 +83,7 @@ pub fn script_bindings(
     };
 
     let out = quote_spanned! {impl_span=>
-        #visibility fn #function_name(world: &mut bevy::ecs::world::World) {
+        #visibility fn #function_name(world: &mut World) {
             #bms_core_path::bindings::function::namespace::NamespaceBuilder::<#type_ident_with_generics>::#builder_function_name(world)
                 #(#function_registrations)*;
 
@@ -155,20 +155,18 @@ impl syn::parse::Parse for Args {
                     }
                 }
                 syn::Meta::NameValue(name_value) => {
-                    if name_value.path.is_ident("bms_core_path") {
-                        if let syn::Expr::Lit(path) = &name_value.value {
-                            if let syn::Lit::Str(lit_str) = &path.lit {
-                                bms_core_path = syn::parse_str(&lit_str.value())?;
-                                continue;
-                            }
-                        }
-                    } else if name_value.path.is_ident("name") {
-                        if let syn::Expr::Lit(path) = &name_value.value {
-                            if let syn::Lit::Str(lit_str) = &path.lit {
-                                name = syn::parse_str(&lit_str.value())?;
-                                continue;
-                            }
-                        }
+                    if name_value.path.is_ident("bms_core_path")
+                        && let syn::Expr::Lit(path) = &name_value.value
+                        && let syn::Lit::Str(lit_str) = &path.lit
+                    {
+                        bms_core_path = syn::parse_str(&lit_str.value())?;
+                        continue;
+                    } else if name_value.path.is_ident("name")
+                        && let syn::Expr::Lit(path) = &name_value.value
+                        && let syn::Lit::Str(lit_str) = &path.lit
+                    {
+                        name = syn::parse_str(&lit_str.value())?;
+                        continue;
                     }
                 }
                 _ => {

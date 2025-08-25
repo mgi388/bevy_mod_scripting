@@ -1,8 +1,19 @@
 //! Contains the logic for handling script callback events
+use ::{
+    bevy_ecs::{
+        event::EventCursor,
+        event::Events,
+        system::{Local, SystemState},
+        world::{Mut, World},
+    },
+    bevy_log::error,
+};
+
 use crate::{
+    IntoScriptPluginParams, Language,
     bindings::{
-        pretty_print::DisplayWithWorld, script_value::ScriptValue, ThreadWorldContainer,
-        WorldAccessGuard, WorldContainer, WorldGuard,
+        ThreadWorldContainer, WorldAccessGuard, WorldContainer, WorldGuard,
+        pretty_print::DisplayWithWorld, script_value::ScriptValue,
     },
     context::ContextPreHandlingInitializer,
     error::ScriptError,
@@ -12,17 +23,6 @@ use crate::{
     },
     extractors::{HandlerContext, WithWorldGuard},
     script::ScriptAttachment,
-    IntoScriptPluginParams, Language,
-};
-use bevy::{
-    ecs::{
-        event::EventCursor,
-        resource::Resource,
-        system::{Local, SystemState},
-        world::{Mut, World},
-    },
-    log::error,
-    prelude::Events,
 };
 
 /// A function that handles a callback event
@@ -35,39 +35,26 @@ pub type HandlerFn<P> = fn(
     runtime: &<P as IntoScriptPluginParams>::R,
 ) -> Result<ScriptValue, ScriptError>;
 
-/// A resource that holds the settings for the callback handler for a specific combination of type parameters
-#[derive(Resource)]
-pub struct CallbackSettings<P: IntoScriptPluginParams> {
-    /// The callback handler function
-    pub callback_handler: HandlerFn<P>,
+/// A utility trait, implemented for all types implementing `IntoScriptPluginParams`.
+///
+/// Calls the underlying handler function with the provided arguments and context.
+/// Implementations will handle the necessary thread local context emplacement and retrieval.
+pub trait ScriptingHandler<P: IntoScriptPluginParams> {
+    /// Calls the handler function with the given arguments and context
+    fn handle(
+        args: Vec<ScriptValue>,
+        context_key: &ScriptAttachment,
+        callback: &CallbackLabel,
+        script_ctxt: &mut P::C,
+        pre_handling_initializers: &[ContextPreHandlingInitializer<P>],
+        runtime: &P::R,
+        world: WorldGuard,
+    ) -> Result<ScriptValue, ScriptError>;
 }
 
-impl<P: IntoScriptPluginParams> Default for CallbackSettings<P> {
-    fn default() -> Self {
-        Self {
-            callback_handler: |_, _, _, _, _, _| Ok(ScriptValue::Unit),
-        }
-    }
-}
-
-impl<P: IntoScriptPluginParams> Clone for CallbackSettings<P> {
-    fn clone(&self) -> Self {
-        Self {
-            callback_handler: self.callback_handler,
-        }
-    }
-}
-
-#[profiling::all_functions]
-impl<P: IntoScriptPluginParams> CallbackSettings<P> {
-    /// Creates a new callback settings resource with the given handler function
-    pub fn new(callback_handler: HandlerFn<P>) -> Self {
-        Self { callback_handler }
-    }
-
+impl<P: IntoScriptPluginParams> ScriptingHandler<P> for P {
     /// Calls the handler function while providing the necessary thread local context
-    pub fn call(
-        handler: HandlerFn<P>,
+    fn handle(
         args: Vec<ScriptValue>,
         context_key: &ScriptAttachment,
         callback: &CallbackLabel,
@@ -78,7 +65,7 @@ impl<P: IntoScriptPluginParams> CallbackSettings<P> {
     ) -> Result<ScriptValue, ScriptError> {
         WorldGuard::with_existing_static_guard(world.clone(), |world| {
             ThreadWorldContainer.set_world(world)?;
-            (handler)(
+            Self::handler()(
                 args,
                 context_key,
                 callback,
@@ -197,7 +184,7 @@ pub fn send_callback_response(world: WorldGuard, response: ScriptCallbackRespons
     });
 
     if let Err(err) = err {
-        bevy::log::error!(
+        error!(
             "Failed to send script callback response: {}",
             err.display_with_world(world.clone())
         );
@@ -213,13 +200,13 @@ pub fn handle_script_errors<I: Iterator<Item = ScriptError> + Clone>(world: Worl
     });
 
     if let Err(err) = err {
-        bevy::log::error!(
+        error!(
             "Failed to send script error events: {}",
             err.display_with_world(world.clone())
         );
     }
 
     for error in errors {
-        bevy::log::error!("{}", error.display_with_world(world.clone()));
+        error!("{}", error.display_with_world(world.clone()));
     }
 }

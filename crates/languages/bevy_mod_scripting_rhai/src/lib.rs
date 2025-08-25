@@ -2,24 +2,26 @@
 
 use std::ops::Deref;
 
-use bevy::{
-    app::Plugin,
-    asset::Handle,
-    ecs::{entity::Entity, world::World},
+use ::{
+    bevy_app::Plugin,
+    bevy_asset::Handle,
+    bevy_ecs::{entity::Entity, world::World},
 };
+use bevy_app::App;
+use bevy_log::trace;
 use bevy_mod_scripting_core::{
+    IntoScriptPluginParams, ScriptingPlugin,
     asset::{Language, ScriptAsset},
     bindings::{
-        function::namespace::Namespace, globals::AppScriptGlobalsRegistry,
-        script_value::ScriptValue, ThreadWorldContainer, WorldContainer,
+        ThreadWorldContainer, WorldContainer, function::namespace::Namespace,
+        globals::AppScriptGlobalsRegistry, script_value::ScriptValue,
     },
-    context::{ContextBuilder, ContextInitializer, ContextPreHandlingInitializer},
+    context::{ContextInitializer, ContextPreHandlingInitializer},
     error::ScriptError,
     event::CallbackLabel,
     reflection_extensions::PartialReflectExt,
     runtime::RuntimeSettings,
     script::{ContextPolicy, DisplayProxy, ScriptAttachment},
-    IntoScriptPluginParams, ScriptingPlugin,
 };
 use bindings::{
     reference::{ReservedKeyword, RhaiReflectReference, RhaiStaticReflectReference},
@@ -27,7 +29,7 @@ use bindings::{
 };
 use parking_lot::RwLock;
 pub use rhai;
-use rhai::{CallFnOptions, Dynamic, Engine, EvalAltResult, Scope, AST};
+use rhai::{AST, CallFnOptions, Dynamic, Engine, EvalAltResult, Scope};
 /// Bindings for rhai.
 pub mod bindings;
 
@@ -50,6 +52,18 @@ impl IntoScriptPluginParams for RhaiScriptingPlugin {
 
     fn build_runtime() -> Self::R {
         Engine::new().into()
+    }
+
+    fn handler() -> bevy_mod_scripting_core::handler::HandlerFn<Self> {
+        rhai_callback_handler
+    }
+
+    fn context_loader() -> bevy_mod_scripting_core::context::ContextLoadFn<Self> {
+        rhai_context_load
+    }
+
+    fn context_reloader() -> bevy_mod_scripting_core::context::ContextReloadFn<Self> {
+        rhai_context_reload
     }
 }
 
@@ -78,11 +92,6 @@ impl Default for RhaiScriptingPlugin {
                         engine.register_iterator_result::<RhaiReflectReference, _>();
                         Ok(())
                     }],
-                },
-                callback_handler: rhai_callback_handler,
-                context_builder: ContextBuilder {
-                    load: rhai_context_load,
-                    reload: rhai_context_reload,
                 },
                 context_initializers: vec![
                     |_, context| {
@@ -181,11 +190,11 @@ impl Default for RhaiScriptingPlugin {
 }
 
 impl Plugin for RhaiScriptingPlugin {
-    fn build(&self, app: &mut bevy::prelude::App) {
+    fn build(&self, app: &mut App) {
         self.scripting_plugin.build(app);
     }
 
-    fn finish(&self, app: &mut bevy::app::App) {
+    fn finish(&self, app: &mut App) {
         self.scripting_plugin.finish(app);
     }
 }
@@ -212,7 +221,7 @@ fn load_rhai_content_into_context(
     pre_handling_initializers
         .iter()
         .try_for_each(|init| init(context_key, context))?;
-    runtime.eval_ast_with_scope(&mut context.scope, &context.ast)?;
+    runtime.eval_ast_with_scope::<()>(&mut context.scope, &context.ast)?;
 
     context.ast.clear_statements();
     Ok(())
@@ -282,11 +291,9 @@ pub fn rhai_callback_handler(
         .map(|v| v.into_dynamic())
         .collect::<Result<Vec<_>, _>>()?;
 
-    bevy::log::trace!(
+    trace!(
         "Calling callback {} in context {} with args: {:?}",
-        callback,
-        context_key,
-        args
+        callback, context_key, args
     );
     let runtime = runtime.read();
 
@@ -300,10 +307,9 @@ pub fn rhai_callback_handler(
         Ok(v) => Ok(ScriptValue::from_dynamic(v)?),
         Err(e) => {
             if let EvalAltResult::ErrorFunctionNotFound(_, _) = e.unwrap_inner() {
-                bevy::log::trace!(
+                trace!(
                     "Context {} is not subscribed to callback {} with the provided arguments.",
-                    context_key,
-                    callback
+                    context_key, callback
                 );
                 Ok(ScriptValue::Unit)
             } else {

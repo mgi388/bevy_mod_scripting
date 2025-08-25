@@ -1,12 +1,13 @@
 //! Traits and types for managing script contexts.
 
+use bevy_ecs::resource::Resource;
+
 use crate::{
-    bindings::{ThreadWorldContainer, WorldContainer, WorldGuard},
-    error::{InteropError, ScriptError},
-    script::ScriptAttachment,
     IntoScriptPluginParams,
+    bindings::{ThreadWorldContainer, WorldContainer, WorldGuard},
+    error::ScriptError,
+    script::ScriptAttachment,
 };
-use bevy::prelude::Resource;
 
 /// A trait that all script contexts must implement.
 ///
@@ -29,8 +30,6 @@ pub struct ContextLoadingSettings<P: IntoScriptPluginParams> {
     /// Whether to emit responses from core script_callbacks like `on_script_loaded` or `on_script_unloaded`.
     /// By default, this is `false` and responses are not emitted.
     pub emit_responses: bool,
-    /// Defines the strategy used to load and reload contexts
-    pub loader: ContextBuilder<P>,
     /// Initializers run once after creating a context but before executing it for the first time
     pub context_initializers: Vec<ContextInitializer<P>>,
     /// Initializers run every time before executing or loading a script
@@ -41,7 +40,6 @@ impl<P: IntoScriptPluginParams> Default for ContextLoadingSettings<P> {
     fn default() -> Self {
         Self {
             emit_responses: false,
-            loader: ContextBuilder::default(),
             context_initializers: Default::default(),
             context_pre_handling_initializers: Default::default(),
         }
@@ -52,7 +50,6 @@ impl<T: IntoScriptPluginParams> Clone for ContextLoadingSettings<T> {
     fn clone(&self) -> Self {
         Self {
             emit_responses: self.emit_responses,
-            loader: self.loader.clone(),
             context_initializers: self.context_initializers.clone(),
             context_pre_handling_initializers: self.context_pre_handling_initializers.clone(),
         }
@@ -77,29 +74,34 @@ pub type ContextReloadFn<P> = fn(
     runtime: &<P as IntoScriptPluginParams>::R,
 ) -> Result<(), ScriptError>;
 
-/// A strategy for loading and reloading contexts
-pub struct ContextBuilder<P: IntoScriptPluginParams> {
-    /// The function to load a context
-    pub load: ContextLoadFn<P>,
-    /// The function to reload a context
-    pub reload: ContextReloadFn<P>,
+/// A utility trait for types implementing `IntoScriptPluginParams`.
+///
+/// Provides methods for initializing and reloading script contexts using the plugin's context loader and reloader functions.
+pub trait ScriptingLoader<P: IntoScriptPluginParams> {
+    /// Loads a script context using the provided loader function
+    fn load(
+        attachment: &ScriptAttachment,
+        content: &[u8],
+        context_initializers: &[ContextInitializer<P>],
+        pre_handling_initializers: &[ContextPreHandlingInitializer<P>],
+        world: WorldGuard,
+        runtime: &P::R,
+    ) -> Result<P::C, ScriptError>;
+
+    /// Reloads a script context using the provided reloader function
+    fn reload(
+        attachment: &ScriptAttachment,
+        content: &[u8],
+        previous_context: &mut P::C,
+        context_initializers: &[ContextInitializer<P>],
+        pre_handling_initializers: &[ContextPreHandlingInitializer<P>],
+        world: WorldGuard,
+        runtime: &P::R,
+    ) -> Result<(), ScriptError>;
 }
 
-impl<P: IntoScriptPluginParams> Default for ContextBuilder<P> {
-    fn default() -> Self {
-        Self {
-            load: |_, _, _, _, _| Err(InteropError::invariant("no context loader set").into()),
-            reload: |_, _, _, _, _, _| {
-                Err(InteropError::invariant("no context reloader set").into())
-            },
-        }
-    }
-}
-
-impl<P: IntoScriptPluginParams> ContextBuilder<P> {
-    /// load a context
-    pub fn load(
-        loader: ContextLoadFn<P>,
+impl<P: IntoScriptPluginParams> ScriptingLoader<P> for P {
+    fn load(
         attachment: &ScriptAttachment,
         content: &[u8],
         context_initializers: &[ContextInitializer<P>],
@@ -109,7 +111,7 @@ impl<P: IntoScriptPluginParams> ContextBuilder<P> {
     ) -> Result<P::C, ScriptError> {
         WorldGuard::with_existing_static_guard(world.clone(), |world| {
             ThreadWorldContainer.set_world(world)?;
-            (loader)(
+            Self::context_loader()(
                 attachment,
                 content,
                 context_initializers,
@@ -119,9 +121,7 @@ impl<P: IntoScriptPluginParams> ContextBuilder<P> {
         })
     }
 
-    /// reload a context
-    pub fn reload(
-        reloader: ContextReloadFn<P>,
+    fn reload(
         attachment: &ScriptAttachment,
         content: &[u8],
         previous_context: &mut P::C,
@@ -132,7 +132,7 @@ impl<P: IntoScriptPluginParams> ContextBuilder<P> {
     ) -> Result<(), ScriptError> {
         WorldGuard::with_existing_static_guard(world, |world| {
             ThreadWorldContainer.set_world(world)?;
-            (reloader)(
+            Self::context_reloader()(
                 attachment,
                 content,
                 previous_context,
@@ -141,14 +141,5 @@ impl<P: IntoScriptPluginParams> ContextBuilder<P> {
                 runtime,
             )
         })
-    }
-}
-
-impl<P: IntoScriptPluginParams> Clone for ContextBuilder<P> {
-    fn clone(&self) -> Self {
-        Self {
-            load: self.load,
-            reload: self.reload,
-        }
     }
 }

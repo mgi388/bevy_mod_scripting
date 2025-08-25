@@ -4,22 +4,24 @@
 //! reflection gives us access to `dyn PartialReflect` objects via their type name,
 //! Scripting languages only really support `Clone` objects so if we want to support references,
 //! we need wrapper types which have owned and ref variants.
-use super::{access_map::ReflectAccessId, WorldGuard};
+use super::{WorldGuard, access_map::ReflectAccessId};
 use crate::{
-    bindings::{with_access_read, with_access_write, ReflectAllocationId},
+    ReflectAllocator,
+    bindings::{ReflectAllocationId, with_access_read, with_access_write},
     error::InteropError,
     reflection_extensions::{PartialReflectExt, TypeIdExtensions},
-    ReflectAllocator,
 };
-use bevy::{
-    ecs::{
+use ::{
+    bevy_ecs::{
         change_detection::MutUntyped, component::ComponentId, entity::Entity,
         world::unsafe_world_cell::UnsafeWorldCell,
     },
-    prelude::{Component, ReflectDefault, Resource},
-    ptr::Ptr,
-    reflect::{ParsedPath, PartialReflect, Reflect, ReflectFromPtr, ReflectPath},
+    bevy_reflect::{
+        ParsedPath, PartialReflect, Reflect, ReflectFromPtr, ReflectPath, prelude::ReflectDefault,
+    },
 };
+use bevy_ecs::{component::Component, ptr::Ptr, resource::Resource};
+use bevy_reflect::{Access, OffsetAccess, ReflectRef};
 use std::{any::TypeId, fmt::Debug};
 
 /// A reference to an arbitrary reflected instance.
@@ -85,14 +87,14 @@ impl ReflectReference {
     /// If this is a reference to something with a length accessible via reflection, returns that length.
     pub fn len(&self, world: WorldGuard) -> Result<Option<usize>, InteropError> {
         self.with_reflect(world, |r| match r.reflect_ref() {
-            bevy::reflect::ReflectRef::Struct(s) => Some(s.field_len()),
-            bevy::reflect::ReflectRef::TupleStruct(ts) => Some(ts.field_len()),
-            bevy::reflect::ReflectRef::Tuple(t) => Some(t.field_len()),
-            bevy::reflect::ReflectRef::List(l) => Some(l.len()),
-            bevy::reflect::ReflectRef::Array(a) => Some(a.len()),
-            bevy::reflect::ReflectRef::Map(m) => Some(m.len()),
-            bevy::reflect::ReflectRef::Set(s) => Some(s.len()),
-            bevy::reflect::ReflectRef::Enum(e) => Some(e.field_len()),
+            ReflectRef::Struct(s) => Some(s.field_len()),
+            ReflectRef::TupleStruct(ts) => Some(ts.field_len()),
+            ReflectRef::Tuple(t) => Some(t.field_len()),
+            ReflectRef::List(l) => Some(l.len()),
+            ReflectRef::Array(a) => Some(a.len()),
+            ReflectRef::Map(m) => Some(m.len()),
+            ReflectRef::Set(s) => Some(s.len()),
+            ReflectRef::Enum(e) => Some(e.field_len()),
             _ => None,
         })
     }
@@ -189,27 +191,28 @@ impl ReflectReference {
         &self,
         world: WorldGuard,
     ) -> Result<Box<dyn PartialReflect>, InteropError> {
-        if let ReflectBase::Owned(id) = &self.base.base_id {
-            if self.reflect_path.is_empty() && id.strong_count() == 0 {
-                let allocator = world.allocator();
-                let mut allocator = allocator.write();
-                let arc = allocator
-                    .remove(id)
-                    .ok_or_else(|| InteropError::garbage_collected_allocation(self.clone()))?;
+        if let ReflectBase::Owned(id) = &self.base.base_id
+            && self.reflect_path.is_empty()
+            && id.strong_count() == 0
+        {
+            let allocator = world.allocator();
+            let mut allocator = allocator.write();
+            let arc = allocator
+                .remove(id)
+                .ok_or_else(|| InteropError::garbage_collected_allocation(self.clone()))?;
 
-                let access_id = ReflectAccessId::for_allocation(id.clone());
-                if world.claim_write_access(access_id) {
-                    // Safety: we claim write access, nobody else is accessing this
-                    if unsafe { &*arc.get_ptr() }.try_as_reflect().is_some() {
-                        // Safety: the only accesses exist in this function
-                        unsafe { world.release_access(access_id) };
-                        return Ok(unsafe { arc.take() });
-                    } else {
-                        unsafe { world.release_access(access_id) };
-                    }
+            let access_id = ReflectAccessId::for_allocation(id.clone());
+            if world.claim_write_access(access_id) {
+                // Safety: we claim write access, nobody else is accessing this
+                if unsafe { &*arc.get_ptr() }.try_as_reflect().is_some() {
+                    // Safety: the only accesses exist in this function
+                    unsafe { world.release_access(access_id) };
+                    return Ok(unsafe { arc.take() });
+                } else {
+                    unsafe { world.release_access(access_id) };
                 }
-                allocator.insert(id.clone(), arc);
             }
+            allocator.insert(id.clone(), arc);
         }
 
         self.with_reflect(world.clone(), |r| {
@@ -315,12 +318,13 @@ impl ReflectReference {
             .get_type_data(self.base.type_id)
             .ok_or_else(|| InteropError::unregistered_base(self.base.clone()))?;
 
-        let ptr = self
-            .base
-            .base_id
-            .clone()
-            .into_ptr(world.as_unsafe_world_cell()?)
-            .ok_or_else(|| InteropError::unregistered_base(self.base.clone()))?;
+        let ptr = unsafe {
+            self.base
+                .base_id
+                .clone()
+                .into_ptr(world.as_unsafe_world_cell()?)
+        }
+        .ok_or_else(|| InteropError::unregistered_base(self.base.clone()))?;
 
         // (Ptr) Safety: we use the same type_id to both
         // 1) retrieve the ptr
@@ -369,12 +373,13 @@ impl ReflectReference {
             .get_type_data(self.base.type_id)
             .ok_or_else(|| InteropError::unregistered_base(self.base.clone()))?;
 
-        let ptr = self
-            .base
-            .base_id
-            .clone()
-            .into_ptr_mut(world.as_unsafe_world_cell()?)
-            .ok_or_else(|| InteropError::unregistered_base(self.base.clone()))?;
+        let ptr = unsafe {
+            self.base
+                .base_id
+                .clone()
+                .into_ptr_mut(world.as_unsafe_world_cell()?)
+        }
+        .ok_or_else(|| InteropError::unregistered_base(self.base.clone()))?;
 
         // (Ptr) Safety: we use the same type_id to both
         // 1) retrieve the ptr
@@ -503,11 +508,11 @@ impl ReflectBase {
         match self {
             ReflectBase::Component(entity, component_id) => {
                 // Safety: the caller ensures invariants hold
-                world.get_entity(entity).ok()?.get_by_id(component_id)
+                unsafe { world.get_entity(entity).ok()?.get_by_id(component_id) }
             }
             ReflectBase::Resource(component_id) => {
                 // Safety: the caller ensures invariants hold
-                world.get_resource_by_id(component_id)
+                unsafe { world.get_resource_by_id(component_id) }
             }
             _ => None,
         }
@@ -522,15 +527,11 @@ impl ReflectBase {
         match self {
             ReflectBase::Component(entity, component_id) => {
                 // Safety: the caller ensures invariants hold
-                world
-                    .get_entity(entity)
-                    .ok()?
-                    .get_mut_by_id(component_id)
-                    .ok()
+                unsafe { world.get_entity(entity).ok()?.get_mut_by_id(component_id) }.ok()
             }
             ReflectBase::Resource(component_id) => {
                 // Safety: the caller ensures invariants hold
-                world.get_resource_mut_by_id(component_id)
+                unsafe { world.get_resource_mut_by_id(component_id) }
             }
             _ => None,
         }
@@ -544,16 +545,16 @@ pub trait ReflectionPathExt {
     /// Returns true if the path is empty
     fn is_empty(&self) -> bool;
     /// Returns an iterator over the accesses
-    fn iter(&self) -> impl Iterator<Item = &bevy::reflect::OffsetAccess>;
+    fn iter(&self) -> impl Iterator<Item = &OffsetAccess>;
 }
 #[profiling::all_functions]
 impl ReflectionPathExt for ParsedPath {
     /// Assumes the accesses are 1 indexed and converts them to 0 indexed
     fn convert_to_0_indexed(&mut self) {
         self.0.iter_mut().for_each(|a| match a.access {
-            bevy::reflect::Access::FieldIndex(ref mut i) => *i -= 1,
-            bevy::reflect::Access::TupleIndex(ref mut i) => *i -= 1,
-            bevy::reflect::Access::ListIndex(ref mut i) => *i -= 1,
+            Access::FieldIndex(ref mut i) => *i -= 1,
+            Access::TupleIndex(ref mut i) => *i -= 1,
+            Access::ListIndex(ref mut i) => *i -= 1,
             _ => {}
         });
     }
@@ -562,7 +563,7 @@ impl ReflectionPathExt for ParsedPath {
         self.0.is_empty()
     }
 
-    fn iter(&self) -> impl Iterator<Item = &bevy::reflect::OffsetAccess> {
+    fn iter(&self) -> impl Iterator<Item = &OffsetAccess> {
         self.0.iter()
     }
 }
@@ -616,8 +617,8 @@ impl ReflectRefIter {
     }
 }
 
-const fn list_index_access(index: usize) -> bevy::reflect::Access<'static> {
-    bevy::reflect::Access::ListIndex(index)
+const fn list_index_access(index: usize) -> Access<'static> {
+    Access::ListIndex(index)
 }
 #[profiling::all_functions]
 impl Iterator for ReflectRefIter {
@@ -642,19 +643,21 @@ impl Iterator for ReflectRefIter {
 
 #[cfg(test)]
 mod test {
-    use bevy::prelude::{AppTypeRegistry, World};
+    use bevy_ecs::{
+        component::Component, reflect::AppTypeRegistry, resource::Resource, world::World,
+    };
 
     use crate::bindings::{
-        function::script_function::AppScriptFunctionRegistry, AppReflectAllocator,
+        AppReflectAllocator, function::script_function::AppScriptFunctionRegistry,
     };
 
     use super::*;
 
     #[derive(Reflect, Component, Debug, Clone, PartialEq)]
-    struct Component(Vec<String>);
+    struct TestComponent(Vec<String>);
 
     #[derive(Reflect, Resource, Debug, Clone, PartialEq)]
-    struct Resource(Vec<String>);
+    struct TestResource(Vec<String>);
 
     fn setup_world() -> World {
         let mut world = World::default();
@@ -662,8 +665,8 @@ mod test {
         let type_registry = AppTypeRegistry::default();
         {
             let mut guard_type_registry = type_registry.write();
-            guard_type_registry.register::<Component>();
-            guard_type_registry.register::<Resource>();
+            guard_type_registry.register::<TestComponent>();
+            guard_type_registry.register::<TestResource>();
         }
 
         world.insert_resource(type_registry);
@@ -682,13 +685,13 @@ mod test {
         let mut world = setup_world();
 
         let entity = world
-            .spawn(Component(vec!["hello".to_owned(), "world".to_owned()]))
+            .spawn(TestComponent(vec!["hello".to_owned(), "world".to_owned()]))
             .id();
 
         let world_guard = WorldGuard::new_exclusive(&mut world);
 
         let mut component_ref =
-            ReflectReference::new_component_ref::<Component>(entity, world_guard.clone())
+            ReflectReference::new_component_ref::<TestComponent>(entity, world_guard.clone())
                 .expect("could not create component reference");
 
         // index into component
@@ -697,13 +700,16 @@ mod test {
                 .tail_type_id(world_guard.clone())
                 .unwrap()
                 .unwrap(),
-            TypeId::of::<Component>()
+            TypeId::of::<TestComponent>()
         );
 
         component_ref
             .with_reflect(world_guard.clone(), |s| {
-                let s = s.try_downcast_ref::<Component>().unwrap();
-                assert_eq!(s, &Component(vec!["hello".to_owned(), "world".to_owned()]));
+                let s = s.try_downcast_ref::<TestComponent>().unwrap();
+                assert_eq!(
+                    s,
+                    &TestComponent(vec!["hello".to_owned(), "world".to_owned()])
+                );
             })
             .unwrap();
 
@@ -763,12 +769,13 @@ mod test {
     fn test_resource_ref() {
         let mut world = setup_world();
 
-        world.insert_resource(Resource(vec!["hello".to_owned(), "world".to_owned()]));
+        world.insert_resource(TestResource(vec!["hello".to_owned(), "world".to_owned()]));
 
         let world_guard = WorldGuard::new_exclusive(&mut world);
 
-        let mut resource_ref = ReflectReference::new_resource_ref::<Resource>(world_guard.clone())
-            .expect("could not create resource reference");
+        let mut resource_ref =
+            ReflectReference::new_resource_ref::<TestResource>(world_guard.clone())
+                .expect("could not create resource reference");
 
         // index into resource
         assert_eq!(
@@ -776,13 +783,16 @@ mod test {
                 .tail_type_id(world_guard.clone())
                 .unwrap()
                 .unwrap(),
-            TypeId::of::<Resource>()
+            TypeId::of::<TestResource>()
         );
 
         resource_ref
             .with_reflect(world_guard.clone(), |s| {
-                let s = s.try_downcast_ref::<Resource>().unwrap();
-                assert_eq!(s, &Resource(vec!["hello".to_owned(), "world".to_owned()]));
+                let s = s.try_downcast_ref::<TestResource>().unwrap();
+                assert_eq!(
+                    s,
+                    &TestResource(vec!["hello".to_owned(), "world".to_owned()])
+                );
             })
             .unwrap();
 
@@ -842,7 +852,7 @@ mod test {
     fn test_allocation_ref() {
         let mut world = setup_world();
 
-        let value = Component(vec!["hello".to_owned(), "world".to_owned()]);
+        let value: TestComponent = TestComponent(vec!["hello".to_owned(), "world".to_owned()]);
 
         let world_guard = WorldGuard::new_exclusive(&mut world);
         let allocator = world_guard.allocator();
@@ -856,13 +866,16 @@ mod test {
                 .tail_type_id(world_guard.clone())
                 .unwrap()
                 .unwrap(),
-            TypeId::of::<Component>()
+            TypeId::of::<TestComponent>()
         );
 
         allocation_ref
             .with_reflect(world_guard.clone(), |s| {
-                let s = s.try_downcast_ref::<Component>().unwrap();
-                assert_eq!(s, &Component(vec!["hello".to_owned(), "world".to_owned()]));
+                let s = s.try_downcast_ref::<TestComponent>().unwrap();
+                assert_eq!(
+                    s,
+                    &TestComponent(vec!["hello".to_owned(), "world".to_owned()])
+                );
             })
             .unwrap();
 

@@ -2,32 +2,35 @@
 //!
 //! These are designed to be used to pipe inputs into other systems which require them, while handling any configuration erorrs nicely.
 #![allow(deprecated)]
-use crate::bindings::pretty_print::DisplayWithWorld;
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
+
+use bevy_ecs::{
+    archetype::Archetype,
+    component::{ComponentId, Tick},
+    query::{Access, AccessConflicts},
+    resource::Resource,
+    storage::SparseSetIndex,
+    system::{SystemMeta, SystemParam, SystemParamValidationError},
+    world::{DeferredWorld, World, unsafe_world_cell::UnsafeWorldCell},
+};
+use fixedbitset::FixedBitSet;
+use parking_lot::Mutex;
+
 use crate::{
+    IntoScriptPluginParams,
     bindings::{
-        access_map::ReflectAccessId, script_value::ScriptValue, WorldAccessGuard, WorldGuard,
+        WorldAccessGuard, WorldGuard, access_map::ReflectAccessId, pretty_print::DisplayWithWorld,
+        script_value::ScriptValue,
     },
     context::ContextLoadingSettings,
     error::{InteropError, ScriptError},
     event::{CallbackLabel, IntoCallbackLabel},
-    handler::CallbackSettings,
+    handler::ScriptingHandler,
     runtime::RuntimeContainer,
     script::{ScriptAttachment, ScriptContext, StaticScripts},
-    IntoScriptPluginParams,
-};
-use bevy::ecs::resource::Resource;
-use bevy::ecs::{
-    component::ComponentId,
-    query::{Access, AccessConflicts},
-    storage::SparseSetIndex,
-    system::{SystemParam, SystemParamValidationError},
-    world::World,
-};
-use fixedbitset::FixedBitSet;
-use parking_lot::Mutex;
-use std::{
-    ops::{Deref, DerefMut},
-    sync::Arc,
 };
 
 /// Executes `system_state.get_mut` followed by `system_state.apply` after running the given closure, makes sure state is correctly handled in the context of an exclusive system.
@@ -87,32 +90,25 @@ unsafe impl<T: Resource + Default> SystemParam for ResScope<'_, T> {
 
     type Item<'world, 'state> = ResScope<'state, T>;
 
-    fn init_state(
-        _world: &mut World,
-        system_meta: &mut bevy::ecs::system::SystemMeta,
-    ) -> Self::State {
+    fn init_state(_world: &mut World, system_meta: &mut SystemMeta) -> Self::State {
         system_meta.set_has_deferred();
         (T::default(), false)
     }
 
     unsafe fn get_param<'world, 'state>(
         state: &'state mut Self::State,
-        _system_meta: &bevy::ecs::system::SystemMeta,
-        world: bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell<'world>,
-        _change_tick: bevy::ecs::component::Tick,
+        _system_meta: &SystemMeta,
+        world: UnsafeWorldCell<'world>,
+        _change_tick: Tick,
     ) -> Self::Item<'world, 'state> {
         state.1 = true;
-        if let Some(mut r) = world.get_resource_mut::<T>() {
+        if let Some(mut r) = unsafe { world.get_resource_mut::<T>() } {
             std::mem::swap(&mut state.0, &mut r);
         }
         ResScope(&mut state.0)
     }
 
-    fn apply(
-        state: &mut Self::State,
-        _system_meta: &bevy::ecs::system::SystemMeta,
-        world: &mut bevy::ecs::world::World,
-    ) {
+    fn apply(state: &mut Self::State, _system_meta: &SystemMeta, world: &mut World) {
         if state.1 {
             world.insert_resource(std::mem::take(&mut state.0));
             state.1 = false;
@@ -122,8 +118,6 @@ unsafe impl<T: Resource + Default> SystemParam for ResScope<'_, T> {
 
 /// Context for systems which handle events for scripts
 pub struct HandlerContext<P: IntoScriptPluginParams> {
-    /// Settings for callbacks
-    pub(crate) callback_settings: CallbackSettings<P>,
     /// Settings for loading contexts
     pub(crate) context_loading_settings: ContextLoadingSettings<P>,
     /// The runtime container
@@ -139,7 +133,6 @@ impl<P: IntoScriptPluginParams> HandlerContext<P> {
     /// Every call to this function must be paired with a call to [`Self::release`].
     pub fn yoink(world: &mut World) -> Self {
         Self {
-            callback_settings: world.remove_resource().unwrap_or_default(),
             context_loading_settings: world.remove_resource().unwrap_or_default(),
             runtime_container: world.remove_resource().unwrap_or_default(),
             static_scripts: world.remove_resource().unwrap_or_default(),
@@ -151,7 +144,6 @@ impl<P: IntoScriptPluginParams> HandlerContext<P> {
     /// Only call this if you have previously yoinked the handler context from the world.
     pub fn release(self, world: &mut World) {
         // insert the handler context back into the world
-        world.insert_resource(self.callback_settings);
         world.insert_resource(self.context_loading_settings);
         world.insert_resource(self.runtime_container);
         world.insert_resource(self.static_scripts);
@@ -165,22 +157,15 @@ impl<P: IntoScriptPluginParams> HandlerContext<P> {
     pub fn destructure(
         &mut self,
     ) -> (
-        &mut CallbackSettings<P>,
         &mut ContextLoadingSettings<P>,
         &mut RuntimeContainer<P>,
         &mut StaticScripts,
     ) {
         (
-            &mut self.callback_settings,
             &mut self.context_loading_settings,
             &mut self.runtime_container,
             &mut self.static_scripts,
         )
-    }
-
-    /// Get the callback settings
-    pub fn callback_settings(&mut self) -> &mut CallbackSettings<P> {
-        &mut self.callback_settings
     }
 
     /// Get the context loading settings
@@ -226,7 +211,6 @@ impl<P: IntoScriptPluginParams> HandlerContext<P> {
         };
 
         // call the script
-        let handler = self.callback_settings.callback_handler;
         let pre_handling_initializers = &self
             .context_loading_settings
             .context_pre_handling_initializers;
@@ -234,8 +218,7 @@ impl<P: IntoScriptPluginParams> HandlerContext<P> {
 
         let mut context = context.lock();
 
-        CallbackSettings::<P>::call(
-            handler,
+        P::handle(
             payload,
             context_key,
             label,
@@ -286,10 +269,7 @@ unsafe impl<T: SystemParam> SystemParam for WithWorldGuard<'_, '_, T> {
 
     type Item<'world, 'state> = WithWorldGuard<'world, 'state, T>;
 
-    fn init_state(
-        world: &mut bevy::ecs::world::World,
-        system_meta: &mut bevy::ecs::system::SystemMeta,
-    ) -> Self::State {
+    fn init_state(world: &mut World, system_meta: &mut SystemMeta) -> Self::State {
         // verify there are no accesses previously
         let other_accessed_components =
             system_meta.component_access_set().combined_access().clone();
@@ -317,12 +297,12 @@ unsafe impl<T: SystemParam> SystemParam for WithWorldGuard<'_, '_, T> {
 
     unsafe fn get_param<'world, 'state>(
         state: &'state mut Self::State,
-        system_meta: &bevy::ecs::system::SystemMeta,
-        world: bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell<'world>,
-        change_tick: bevy::ecs::component::Tick,
+        system_meta: &SystemMeta,
+        world: UnsafeWorldCell<'world>,
+        change_tick: Tick,
     ) -> Self::Item<'world, 'state> {
         // create a guard which can only access the resources/components specified by the system.
-        let guard = WorldAccessGuard::new_exclusive(world.world_mut());
+        let guard = WorldAccessGuard::new_exclusive(unsafe { world.world_mut() });
 
         #[allow(
             clippy::panic,
@@ -331,49 +311,47 @@ unsafe impl<T: SystemParam> SystemParam for WithWorldGuard<'_, '_, T> {
         for (raid, is_write) in &state.1 {
             if *is_write {
                 if !guard.claim_write_access(*raid) {
-                    panic!("System tried to access set of system params which break rust aliasing rules. Aliasing access: {}", (*raid).display_with_world(guard.clone()));
+                    panic!(
+                        "System tried to access set of system params which break rust aliasing rules. Aliasing access: {}",
+                        (*raid).display_with_world(guard.clone())
+                    );
                 }
             } else if !guard.claim_read_access(*raid) {
-                panic!("System tried to access set of system params which break rust aliasing rules. Aliasing access: {}", (*raid).display_with_world(guard.clone()));
+                panic!(
+                    "System tried to access set of system params which break rust aliasing rules. Aliasing access: {}",
+                    (*raid).display_with_world(guard.clone())
+                );
             }
         }
 
         WithWorldGuard {
             world_guard: guard,
-            param: T::get_param(&mut state.0, system_meta, world, change_tick),
+            param: unsafe { T::get_param(&mut state.0, system_meta, world, change_tick) },
         }
     }
 
     unsafe fn new_archetype(
         state: &mut Self::State,
-        archetype: &bevy::ecs::archetype::Archetype,
-        system_meta: &mut bevy::ecs::system::SystemMeta,
+        archetype: &Archetype,
+        system_meta: &mut SystemMeta,
     ) {
-        T::new_archetype(&mut state.0, archetype, system_meta)
+        unsafe { T::new_archetype(&mut state.0, archetype, system_meta) }
     }
 
-    fn apply(
-        state: &mut Self::State,
-        system_meta: &bevy::ecs::system::SystemMeta,
-        world: &mut World,
-    ) {
+    fn apply(state: &mut Self::State, system_meta: &SystemMeta, world: &mut World) {
         T::apply(&mut state.0, system_meta, world)
     }
 
-    fn queue(
-        state: &mut Self::State,
-        system_meta: &bevy::ecs::system::SystemMeta,
-        world: bevy::ecs::world::DeferredWorld,
-    ) {
+    fn queue(state: &mut Self::State, system_meta: &SystemMeta, world: DeferredWorld) {
         T::queue(&mut state.0, system_meta, world)
     }
 
     unsafe fn validate_param(
         state: &Self::State,
-        system_meta: &bevy::ecs::system::SystemMeta,
-        world: bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell,
+        system_meta: &SystemMeta,
+        world: UnsafeWorldCell,
     ) -> Result<(), SystemParamValidationError> {
-        T::validate_param(&state.0, system_meta, world)
+        unsafe { T::validate_param(&state.0, system_meta, world) }
     }
 }
 
@@ -419,15 +397,15 @@ pub(crate) fn get_all_access_ids(access: &Access<ComponentId>) -> Vec<(ReflectAc
 
 #[cfg(test)]
 mod test {
-    use bevy::{
-        app::{App, Update},
-        ecs::{
+    use ::{
+        bevy_app::{App, Plugin, Update},
+        bevy_ecs::{
             component::Component,
+            entity::Entity,
             event::{Event, EventReader},
             system::{Query, ResMut, SystemState},
             world::FromWorld,
         },
-        prelude::Resource,
     };
     use test_utils::make_test_plugin;
 
@@ -446,17 +424,21 @@ mod test {
         let system_fn = |mut guard: WithWorldGuard<(ResMut<Res>, Query<&'static Comp>)>| {
             let (guard, (_res, _entity)) = guard.get_mut();
             assert_eq!(guard.list_accesses().len(), 2, "Expected 2 accesses");
-            assert!(!guard.claim_read_access(
-                ReflectAccessId::for_resource::<Res>(&guard.as_unsafe_world_cell().unwrap())
-                    .unwrap()
-            ));
-            assert!(!guard.claim_write_access(
-                ReflectAccessId::for_resource::<Res>(&guard.as_unsafe_world_cell().unwrap())
-                    .unwrap()
-            ));
+            assert!(
+                !guard.claim_read_access(
+                    ReflectAccessId::for_resource::<Res>(&guard.as_unsafe_world_cell().unwrap())
+                        .unwrap()
+                )
+            );
+            assert!(
+                !guard.claim_write_access(
+                    ReflectAccessId::for_resource::<Res>(&guard.as_unsafe_world_cell().unwrap())
+                        .unwrap()
+                )
+            );
         };
 
-        let mut app = bevy::app::App::new();
+        let mut app = App::new();
         app.add_systems(Update, system_fn);
         app.insert_resource(Res);
         app.world_mut().spawn(Comp);
@@ -473,7 +455,7 @@ mod test {
     pub fn check_with_world_panics_when_used_with_resource_top_level() {
         let system_fn = |_res: ResMut<Res>, mut _guard: WithWorldGuard<Query<&'static Comp>>| {};
 
-        let mut app = bevy::app::App::new();
+        let mut app = App::new();
         app.add_systems(Update, system_fn);
         app.insert_resource(Res);
         app.world_mut().spawn(Comp);
@@ -493,7 +475,7 @@ mod test {
         let system_fn =
             |_res: EventReader<TestEvent>, mut _guard: WithWorldGuard<Query<&'static Comp>>| {};
 
-        let mut app = bevy::app::App::new();
+        let mut app = App::new();
         app.add_systems(Update, system_fn);
         app.insert_resource(Res);
         app.world_mut().spawn(Comp);

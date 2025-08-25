@@ -1,22 +1,24 @@
 //! Lua integration for the bevy_mod_scripting system.
-use bevy::{
-    app::Plugin,
-    asset::Handle,
-    ecs::{entity::Entity, world::World},
+use ::{
+    bevy_app::Plugin,
+    bevy_asset::Handle,
+    bevy_ecs::{entity::Entity, world::World},
 };
+use bevy_app::App;
+use bevy_log::trace;
 use bevy_mod_scripting_core::{
+    IntoScriptPluginParams, ScriptingPlugin,
     asset::{Language, ScriptAsset},
     bindings::{
-        function::namespace::Namespace, globals::AppScriptGlobalsRegistry,
-        script_value::ScriptValue, ThreadWorldContainer, WorldContainer,
+        ThreadWorldContainer, WorldContainer, function::namespace::Namespace,
+        globals::AppScriptGlobalsRegistry, script_value::ScriptValue,
     },
-    context::{ContextBuilder, ContextInitializer, ContextPreHandlingInitializer},
+    context::{ContextInitializer, ContextPreHandlingInitializer},
     error::ScriptError,
     event::CallbackLabel,
     reflection_extensions::PartialReflectExt,
     runtime::RuntimeSettings,
     script::{ContextPolicy, ScriptAttachment},
-    IntoScriptPluginParams, ScriptingPlugin,
 };
 use bindings::{
     reference::{LuaReflectReference, LuaStaticReflectReference},
@@ -34,6 +36,18 @@ impl IntoScriptPluginParams for LuaScriptingPlugin {
     const LANGUAGE: Language = Language::Lua;
 
     fn build_runtime() -> Self::R {}
+
+    fn handler() -> bevy_mod_scripting_core::handler::HandlerFn<Self> {
+        lua_handler
+    }
+
+    fn context_loader() -> bevy_mod_scripting_core::context::ContextLoadFn<Self> {
+        lua_context_load
+    }
+
+    fn context_reloader() -> bevy_mod_scripting_core::context::ContextReloadFn<Self> {
+        lua_context_reload
+    }
 }
 
 // necessary for automatic config goodies
@@ -54,11 +68,6 @@ impl Default for LuaScriptingPlugin {
         LuaScriptingPlugin {
             scripting_plugin: ScriptingPlugin {
                 runtime_settings: RuntimeSettings::default(),
-                callback_handler: lua_handler,
-                context_builder: ContextBuilder::<LuaScriptingPlugin> {
-                    load: lua_context_load,
-                    reload: lua_context_reload,
-                },
                 context_initializers: vec![
                     |_script_id, context| {
                         // set the world global
@@ -152,11 +161,11 @@ impl Default for LuaScriptingPlugin {
 }
 
 impl Plugin for LuaScriptingPlugin {
-    fn build(&self, app: &mut bevy::prelude::App) {
+    fn build(&self, app: &mut App) {
         self.scripting_plugin.build(app);
     }
 
-    fn finish(&self, app: &mut bevy::app::App) {
+    fn finish(&self, app: &mut App) {
         self.scripting_plugin.finish(app);
     }
 }
@@ -247,7 +256,7 @@ pub fn lua_handler(
         Ok(handler) => handler,
         // not subscribed to this event type
         Err(_) => {
-            bevy::log::trace!(
+            trace!(
                 "Context {} is not subscribed to callback {}",
                 context_key,
                 callback_label.as_ref()
@@ -268,10 +277,7 @@ pub fn lua_handler(
 
 #[cfg(test)]
 mod test {
-    use bevy::{
-        asset::{AssetId, AssetIndex},
-        prelude::Handle,
-    };
+    use ::bevy_asset::{AssetId, AssetIndex, Handle};
     use mlua::Value;
 
     use super::*;

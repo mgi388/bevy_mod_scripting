@@ -1,26 +1,5 @@
 //! Errors that can occur when interacting with the scripting system
 
-use crate::script::DisplayProxy;
-use crate::{
-    bindings::{
-        access_map::{DisplayCodeLocation, ReflectAccessId},
-        function::namespace::Namespace,
-        pretty_print::DisplayWithWorld,
-        script_value::ScriptValue,
-        ReflectBaseType, ReflectReference,
-    },
-    script::ContextKey,
-    ScriptAsset,
-};
-use bevy::{
-    asset::{AssetPath, Handle},
-    ecs::{
-        component::ComponentId,
-        schedule::{ScheduleBuildError, ScheduleNotInitialized},
-    },
-    prelude::Entity,
-    reflect::{PartialReflect, Reflect},
-};
 use std::{
     any::TypeId,
     borrow::Cow,
@@ -28,6 +7,29 @@ use std::{
     ops::Deref,
     str::Utf8Error,
     sync::Arc,
+};
+
+use bevy_ecs::entity::Entity;
+
+use ::{
+    bevy_asset::{AssetPath, Handle},
+    bevy_ecs::{
+        component::ComponentId,
+        schedule::{ScheduleBuildError, ScheduleNotInitialized},
+    },
+    bevy_reflect::{PartialReflect, Reflect},
+};
+
+use crate::{
+    ScriptAsset,
+    bindings::{
+        ReflectBaseType, ReflectReference,
+        access_map::{DisplayCodeLocation, ReflectAccessId},
+        function::namespace::Namespace,
+        pretty_print::DisplayWithWorld,
+        script_value::ScriptValue,
+    },
+    script::{ContextKey, DisplayProxy},
 };
 
 /// An error with an optional script Context
@@ -1621,13 +1623,13 @@ impl Default for InteropErrorInner {
 
 #[cfg(test)]
 mod test {
-    use bevy::prelude::{AppTypeRegistry, World};
 
-    use crate::bindings::{
-        function::script_function::AppScriptFunctionRegistry, AppReflectAllocator, WorldGuard,
-    };
+    use bevy_ecs::{reflect::AppTypeRegistry, world::World};
 
     use super::*;
+    use crate::bindings::{
+        AppReflectAllocator, WorldGuard, function::script_function::AppScriptFunctionRegistry,
+    };
 
     #[test]
     fn test_error_display() {

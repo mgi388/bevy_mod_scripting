@@ -1,26 +1,28 @@
 //! Commands for creating, updating and deleting scripts
 
+use std::marker::PhantomData;
+
 use crate::{
+    IntoScriptPluginParams, ScriptContext,
     asset::ScriptAsset,
     bindings::{ScriptValue, WorldGuard},
-    context::ContextBuilder,
+    context::ScriptingLoader,
     error::{InteropError, ScriptError},
     event::{
         CallbackLabel, IntoCallbackLabel, OnScriptLoaded, OnScriptReloaded, OnScriptUnloaded,
         ScriptCallbackResponseEvent, ScriptEvent,
     },
-    extractors::{with_handler_system_state, HandlerContext},
+    extractors::{HandlerContext, with_handler_system_state},
     handler::{handle_script_errors, send_callback_response},
     script::{DisplayProxy, ScriptAttachment, StaticScripts},
-    IntoScriptPluginParams, ScriptContext,
 };
-use bevy::{
-    asset::{Assets, Handle},
-    ecs::event::Events,
-    log::{debug, warn},
-    prelude::Command,
+use ::{
+    bevy_asset::{Assets, Handle},
+    bevy_ecs::event::Events,
+    bevy_log::{debug, warn},
 };
-use std::marker::PhantomData;
+use bevy_ecs::{system::Command, world::World};
+use bevy_log::{error, info, trace};
 
 /// Detaches a script, invoking the `on_script_unloaded` callback if it exists, and removes the script from the static scripts collection.
 pub struct DeleteScript<P: IntoScriptPluginParams> {
@@ -50,7 +52,7 @@ impl<P: IntoScriptPluginParams> DeleteScript<P> {
 }
 
 impl<P: IntoScriptPluginParams> Command for DeleteScript<P> {
-    fn apply(mut self, world: &mut bevy::prelude::World) {
+    fn apply(mut self, world: &mut World) {
         // we demote to weak from here on out, so as not to hold the asset hostage
         self.context_key = self.context_key.into_weak();
 
@@ -87,13 +89,13 @@ impl<P: IntoScriptPluginParams> Command for DeleteScript<P> {
         let delete_context = residents_count == 1;
         let script_id = self.context_key.script();
         if delete_context && script_contexts.remove(&self.context_key).is_some() {
-            bevy::log::info!(
+            info!(
                 "{}: Deleted context for script {:?}",
                 P::LANGUAGE,
                 script_id.display()
             );
         } else {
-            bevy::log::info!(
+            info!(
                 "{}: Context for script {:?} was not deleted, as it still has {} residents",
                 P::LANGUAGE,
                 script_id.display(),
@@ -149,10 +151,9 @@ impl<P: IntoScriptPluginParams> CreateOrUpdateScript<P> {
         guard: WorldGuard,
         handler_ctxt: &HandlerContext<P>,
     ) -> Result<(), ScriptError> {
-        bevy::log::debug!("{}: reloading context {}", P::LANGUAGE, attachment);
+        debug!("{}: reloading context {}", P::LANGUAGE, attachment);
         // reload context
-        (ContextBuilder::<P>::reload)(
-            handler_ctxt.context_loading_settings.loader.reload,
+        P::reload(
             attachment,
             content,
             context,
@@ -171,9 +172,8 @@ impl<P: IntoScriptPluginParams> CreateOrUpdateScript<P> {
         guard: WorldGuard,
         handler_ctxt: &HandlerContext<P>,
     ) -> Result<P::C, ScriptError> {
-        bevy::log::debug!("{}: loading context {}", P::LANGUAGE, attachment);
-        let context = (ContextBuilder::<P>::load)(
-            handler_ctxt.context_loading_settings.loader.load,
+        debug!("{}: loading context {}", P::LANGUAGE, attachment);
+        let context = P::load(
             attachment,
             content,
             &handler_ctxt.context_loading_settings.context_initializers,
@@ -262,7 +262,6 @@ impl<P: IntoScriptPluginParams> CreateOrUpdateScript<P> {
         if is_reload {
             phrase = "reloading";
             success = "reloaded";
-
             script_state = Self::before_reload(
                 attachment.clone(),
                 guard.clone(),
@@ -295,14 +294,13 @@ impl<P: IntoScriptPluginParams> CreateOrUpdateScript<P> {
 
         match result_context_to_insert {
             Ok(maybe_context) => {
-                if let Some(context) = maybe_context {
-                    if handler_ctxt
+                if let Some(context) = maybe_context
+                    && handler_ctxt
                         .script_context
                         .insert(&attachment, context)
                         .is_err()
-                    {
-                        warn!("Unable to insert script context for {}.", attachment);
-                    }
+                {
+                    warn!("Unable to insert script context for {}.", attachment);
                 }
 
                 // mark as resident in the context
@@ -315,7 +313,7 @@ impl<P: IntoScriptPluginParams> CreateOrUpdateScript<P> {
                         )))
                     })?;
 
-                bevy::log::debug!(
+                debug!(
                     "{}: script {} successfully {}",
                     P::LANGUAGE,
                     attachment,
@@ -336,11 +334,12 @@ impl<P: IntoScriptPluginParams> CreateOrUpdateScript<P> {
             Err(err) => {
                 handle_script_errors(
                     guard,
-                    vec![err
-                        .clone()
-                        .with_script(script_id.display())
-                        .with_context(P::LANGUAGE)
-                        .with_context(phrase)]
+                    vec![
+                        err.clone()
+                            .with_script(script_id.display())
+                            .with_context(P::LANGUAGE)
+                            .with_context(phrase),
+                    ]
                     .into_iter(),
                 );
                 Err(err)
@@ -351,7 +350,7 @@ impl<P: IntoScriptPluginParams> CreateOrUpdateScript<P> {
 
 #[profiling::all_functions]
 impl<P: IntoScriptPluginParams> Command for CreateOrUpdateScript<P> {
-    fn apply(self, world: &mut bevy::prelude::World) {
+    fn apply(self, world: &mut World) {
         let content = match self.content {
             Some(content) => content,
             None => match world
@@ -361,7 +360,7 @@ impl<P: IntoScriptPluginParams> Command for CreateOrUpdateScript<P> {
             {
                 Some(content) => content,
                 None => {
-                    bevy::log::error!(
+                    error!(
                         "{}: No content provided for script attachment {}. Cannot attach script.",
                         P::LANGUAGE,
                         self.attachment.script().display()
@@ -438,7 +437,7 @@ impl<P: IntoScriptPluginParams> RunScriptCallback<P> {
         );
 
         if self.trigger_response {
-            bevy::log::trace!(
+            trace!(
                 "{}: Sending callback response for callback: {}, attachment: {}",
                 P::LANGUAGE,
                 self.callback,
@@ -472,7 +471,7 @@ impl<P: IntoScriptPluginParams> RunScriptCallback<P> {
     /// Equivalent to running the command, but also returns the result of the callback.
     ///
     /// The returned error will already be handled and logged.
-    pub fn run(self, world: &mut bevy::prelude::World) -> Result<ScriptValue, ScriptError> {
+    pub fn run(self, world: &mut World) -> Result<ScriptValue, ScriptError> {
         with_handler_system_state(world, |guard, handler_ctxt: &mut HandlerContext<P>| {
             self.run_with_handler(guard, handler_ctxt)
         })
@@ -480,7 +479,7 @@ impl<P: IntoScriptPluginParams> RunScriptCallback<P> {
 }
 
 impl<P: IntoScriptPluginParams> Command for RunScriptCallback<P> {
-    fn apply(self, world: &mut bevy::prelude::World) {
+    fn apply(self, world: &mut World) {
         // Internals handle this.
         let _ = self.run(world);
     }
@@ -499,7 +498,7 @@ impl AddStaticScript {
     }
 
     /// Runs the command emitting the appropriate script event
-    pub fn run(self, events: &mut bevy::prelude::Events<ScriptEvent>) {
+    pub fn run(self, events: &mut Events<ScriptEvent>) {
         events.send(ScriptEvent::Attached {
             key: ScriptAttachment::StaticScript(self.id.clone()),
         });
@@ -507,7 +506,7 @@ impl AddStaticScript {
 }
 
 impl Command for AddStaticScript {
-    fn apply(self, world: &mut bevy::prelude::World) {
+    fn apply(self, world: &mut World) {
         let mut events = world.get_resource_or_init::<Events<ScriptEvent>>();
         self.run(&mut events);
     }
@@ -535,7 +534,7 @@ impl RemoveStaticScript {
 
 #[profiling::all_functions]
 impl Command for RemoveStaticScript {
-    fn apply(self, world: &mut bevy::prelude::World) {
+    fn apply(self, world: &mut World) {
         let mut events = world.get_resource_or_init::<Events<ScriptEvent>>();
         self.run(&mut events);
     }

@@ -1,7 +1,7 @@
 [package]
 name = "ladfile"
 version = "0.5.0"
-edition = "2021"
+edition = "2024"
 authors = ["Maksymilian Mozolewski <makspl17@gmail.com>"]
 license = "MIT OR Apache-2.0"
 description = "Language Agnostic Declaration (LAD) file format for the bevy_mod_scripting crate"
@@ -13,9 +13,9 @@ include = ["readme.md", "/src", "/test_assets"]
 readme = "readme.md"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-indexmap = { version = "2.7", features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
 
 
 [features]

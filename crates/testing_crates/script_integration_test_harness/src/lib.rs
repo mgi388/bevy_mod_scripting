@@ -7,34 +7,34 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bevy::{
-    app::{App, Plugin, PostUpdate, Startup, Update},
-    asset::{AssetPath, AssetServer, Handle, LoadState},
-    ecs::{
+use ::{
+    bevy_app::{App, Plugin, PostUpdate, Startup, Update},
+    bevy_asset::{AssetPath, AssetServer, Handle, LoadState},
+    bevy_ecs::{
         component::Component, resource::Resource, schedule::IntoScheduleConfigs, system::Command,
         world::FromWorld,
     },
-    log::{
-        tracing::{self, event},
+    bevy_log::{
         Level,
+        tracing::{self, event},
     },
-    reflect::Reflect,
+    bevy_reflect::Reflect,
 };
 use bevy_mod_scripting_core::{
+    BMSScriptingInfrastructurePlugin, IntoScriptPluginParams,
     bindings::{
-        pretty_print::DisplayWithWorld, CoreScriptGlobalsPlugin, ReflectAccessId, WorldAccessGuard,
-        WorldGuard,
+        CoreScriptGlobalsPlugin, ReflectAccessId, WorldAccessGuard, WorldGuard,
+        pretty_print::DisplayWithWorld,
     },
     commands::CreateOrUpdateScript,
     error::ScriptError,
     extractors::HandlerContext,
     script::{DisplayProxy, ScriptAttachment, ScriptComponent, ScriptId},
-    BMSScriptingInfrastructurePlugin, IntoScriptPluginParams,
 };
 use bevy_mod_scripting_functions::ScriptFunctionsPlugin;
-use criterion::{measurement::Measurement, BatchSize};
+use criterion::{BatchSize, measurement::Measurement};
 use rand::{Rng, SeedableRng};
-use test_functions::{register_test_functions, RNG};
+use test_functions::{RNG, register_test_functions};
 use test_utils::test_data::setup_integration_test;
 
 use crate::scenario::Scenario;
@@ -44,7 +44,7 @@ fn dummy_startup_system<T>() {}
 fn dummy_before_post_update_system() {}
 fn dummy_post_update_system() {}
 
-pub fn install_test_plugin(app: &mut bevy::app::App, include_test_functions: bool) {
+pub fn install_test_plugin(app: &mut App, include_test_functions: bool) {
     app.add_plugins((
         ScriptFunctionsPlugin,
         CoreScriptGlobalsPlugin::default(),
@@ -65,8 +65,8 @@ pub fn install_test_plugin(app: &mut bevy::app::App, include_test_functions: boo
 
 #[cfg(feature = "lua")]
 pub fn make_test_lua_plugin() -> bevy_mod_scripting_lua::LuaScriptingPlugin {
-    use bevy_mod_scripting_core::{bindings::WorldContainer, ConfigureScriptPlugin};
-    use bevy_mod_scripting_lua::{mlua, LuaScriptingPlugin};
+    use bevy_mod_scripting_core::{ConfigureScriptPlugin, bindings::WorldContainer};
+    use bevy_mod_scripting_lua::{LuaScriptingPlugin, mlua};
 
     LuaScriptingPlugin::default().add_context_initializer(
         |_, ctxt: &mut bevy_mod_scripting_lua::mlua::Lua| {
@@ -81,7 +81,7 @@ pub fn make_test_lua_plugin() -> bevy_mod_scripting_lua::LuaScriptingPlugin {
                         Ok(_) => {
                             return Err(mlua::Error::external(
                                 "Expected function to throw error, but it did not.",
-                            ))
+                            ));
                         }
                         Err(e) => ScriptError::from_mlua_error(e).display_with_world(world),
                     };
@@ -106,12 +106,12 @@ pub fn make_test_lua_plugin() -> bevy_mod_scripting_lua::LuaScriptingPlugin {
 #[cfg(feature = "rhai")]
 pub fn make_test_rhai_plugin() -> bevy_mod_scripting_rhai::RhaiScriptingPlugin {
     use bevy_mod_scripting_core::{
-        bindings::{ThreadWorldContainer, WorldContainer},
         ConfigureScriptPlugin,
+        bindings::{ThreadWorldContainer, WorldContainer},
     };
     use bevy_mod_scripting_rhai::{
-        rhai::{Dynamic, EvalAltResult, FnPtr, NativeCallContext},
         RhaiScriptingPlugin,
+        rhai::{Dynamic, EvalAltResult, FnPtr, NativeCallContext},
     };
 
     RhaiScriptingPlugin::default().add_runtime_initializer(|runtime| {
@@ -175,7 +175,7 @@ pub fn execute_integration_test(scenario: Scenario) -> Result<(), String> {
         manifest_dir.pop();
     }
 
-    std::env::set_var("BEVY_ASSET_ROOT", manifest_dir.clone());
+    unsafe { std::env::set_var("BEVY_ASSET_ROOT", manifest_dir.clone()) };
 
     match scenario.execute(App::default()) {
         Ok(_) => Ok(()),
@@ -205,9 +205,7 @@ pub fn run_lua_benchmark<M: criterion::measurement::Measurement>(
                     pre_bencher.call::<()>(()).unwrap();
                 }
                 c.iter(|| {
-                    use bevy::log::{tracing, Level};
-
-                    tracing::event!(Level::TRACE, "profiling_iter {}", label);
+                    event!(Level::TRACE, "profiling_iter {}", label);
                     bencher.call::<()>(()).unwrap();
                 })
             });
@@ -243,9 +241,7 @@ pub fn run_rhai_benchmark<M: criterion::measurement::Measurement>(
                 }
 
                 c.iter(|| {
-                    use bevy::log::{tracing, Level};
-
-                    tracing::event!(Level::TRACE, "profiling_iter {}", label);
+                    event!(Level::TRACE, "profiling_iter {}", label);
                     let _ = runtime
                         .call_fn::<Dynamic>(&mut ctxt.scope, &ctxt.ast, "bench", ARGS)
                         .unwrap();
@@ -275,6 +271,11 @@ where
 
     install_test_plugin(&mut app, true);
     app.add_plugins(plugin);
+
+    // finalize
+    app.cleanup();
+    app.finish();
+
     let script_path = script_path.into();
     let script_handle = app.world().resource::<AssetServer>().load(script_path);
     let script_id = script_handle.id();
@@ -282,10 +283,6 @@ where
         .world_mut()
         .spawn(ScriptComponent(vec![script_handle.clone()]))
         .id();
-
-    // finalize
-    app.cleanup();
-    app.finish();
 
     let timer = Instant::now();
 
@@ -443,7 +440,7 @@ pub fn perform_benchmark_with_generator<
                 )
             },
             |(i, w)| {
-                event!(bevy::log::Level::TRACE, "profiling_iter {}", label);
+                event!(Level::TRACE, "profiling_iter {}", label);
                 bench_fn(w, i)
             },
             batch_size,

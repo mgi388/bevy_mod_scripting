@@ -2,27 +2,39 @@
 //!
 //! Contains language agnostic systems and types for handling scripting in bevy.
 
-use crate::{bindings::MarkAsCore, event::ScriptErrorEvent};
-use asset::{
-    configure_asset_systems, configure_asset_systems_for_plugin, Language, ScriptAsset,
-    ScriptAssetLoader,
+use crate::{
+    bindings::MarkAsCore,
+    context::{ContextLoadFn, ContextReloadFn},
+    event::ScriptErrorEvent,
 };
-use bevy::{platform::collections::HashMap, prelude::*};
+use asset::{
+    Language, ScriptAsset, ScriptAssetLoader, configure_asset_systems,
+    configure_asset_systems_for_plugin,
+};
+use bevy_app::{App, Plugin, PostStartup, PostUpdate};
+use bevy_asset::{AssetApp, Handle};
+use bevy_ecs::{
+    reflect::{AppTypeRegistry, ReflectComponent},
+    resource::Resource,
+    schedule::SystemSet,
+    system::{Command, In},
+};
+use bevy_ecs::{schedule::IntoScheduleConfigs, system::IntoSystem};
+use bevy_log::error;
+use bevy_platform::collections::HashMap;
 use bindings::{
-    function::script_function::AppScriptFunctionRegistry, garbage_collector,
-    schedule::AppScheduleRegistry, script_value::ScriptValue, AppReflectAllocator,
-    DynamicScriptComponentPlugin, ReflectAllocator, ReflectReference, ScriptTypeRegistration,
+    AppReflectAllocator, DynamicScriptComponentPlugin, ReflectAllocator, ReflectReference,
+    ScriptTypeRegistration, function::script_function::AppScriptFunctionRegistry,
+    garbage_collector, schedule::AppScheduleRegistry, script_value::ScriptValue,
 };
 use commands::{AddStaticScript, RemoveStaticScript};
-use context::{
-    Context, ContextBuilder, ContextInitializer, ContextLoadingSettings,
-    ContextPreHandlingInitializer,
-};
+use context::{Context, ContextInitializer, ContextLoadingSettings, ContextPreHandlingInitializer};
 use error::ScriptError;
 use event::{ScriptCallbackEvent, ScriptCallbackResponseEvent, ScriptEvent};
-use handler::{CallbackSettings, HandlerFn};
-use runtime::{initialize_runtime, Runtime, RuntimeContainer, RuntimeInitializer, RuntimeSettings};
+use handler::HandlerFn;
+use runtime::{Runtime, RuntimeContainer, RuntimeInitializer, RuntimeSettings, initialize_runtime};
 use script::{ContextPolicy, ScriptComponent, ScriptContext, StaticScripts};
+use std::ops::{Deref, DerefMut};
 
 pub mod asset;
 pub mod bindings;
@@ -70,16 +82,21 @@ pub trait IntoScriptPluginParams: 'static {
 
     /// Build the runtime
     fn build_runtime() -> Self::R;
+
+    /// Returns the handler function for the plugin
+    fn handler() -> HandlerFn<Self>;
+
+    /// Returns the context loader function for the plugin
+    fn context_loader() -> ContextLoadFn<Self>;
+
+    /// Returns the context reloader function for the plugin
+    fn context_reloader() -> ContextReloadFn<Self>;
 }
 
 /// Bevy plugin enabling scripting within the bevy mod scripting framework
 pub struct ScriptingPlugin<P: IntoScriptPluginParams> {
     /// Settings for the runtime
     pub runtime_settings: RuntimeSettings<P>,
-    /// The handler used for executing callbacks in scripts
-    pub callback_handler: HandlerFn<P>,
-    /// The context builder for loading contexts
-    pub context_builder: ContextBuilder<P>,
 
     /// The strategy used to assign contexts to scripts
     pub context_policy: ContextPolicy,
@@ -103,7 +120,6 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScriptingPlugin")
-            .field("callback_handler", &self.callback_handler)
             .field("context_policy", &self.context_policy)
             .field("language", &self.language)
             .field("context_initializers", &self.context_initializers)
@@ -120,8 +136,6 @@ impl<P: IntoScriptPluginParams> Default for ScriptingPlugin<P> {
     fn default() -> Self {
         Self {
             runtime_settings: Default::default(),
-            callback_handler: CallbackSettings::<P>::default().callback_handler,
-            context_builder: Default::default(),
             context_policy: ContextPolicy::default(),
             language: Default::default(),
             context_initializers: Default::default(),
@@ -133,16 +147,12 @@ impl<P: IntoScriptPluginParams> Default for ScriptingPlugin<P> {
 
 #[profiling::all_functions]
 impl<P: IntoScriptPluginParams> Plugin for ScriptingPlugin<P> {
-    fn build(&self, app: &mut bevy::prelude::App) {
+    fn build(&self, app: &mut App) {
         app.insert_resource(self.runtime_settings.clone())
             .insert_resource::<RuntimeContainer<P>>(RuntimeContainer {
                 runtime: P::build_runtime(),
             })
-            .insert_resource::<CallbackSettings<P>>(CallbackSettings {
-                callback_handler: self.callback_handler,
-            })
             .insert_resource::<ContextLoadingSettings<P>>(ContextLoadingSettings {
-                loader: self.context_builder.clone(),
                 context_initializers: self.context_initializers.clone(),
                 context_pre_handling_initializers: self.context_pre_handling_initializers.clone(),
                 emit_responses: self.emit_responses,
@@ -399,14 +409,29 @@ pub trait ConfigureScriptAssetSettings {
 /// Collect the language extensions supported during initialization.
 ///
 /// NOTE: This resource is removed after plugin setup.
-#[derive(Debug, Resource, Deref, DerefMut)]
+#[derive(Debug, Resource)]
 pub struct LanguageExtensions(HashMap<&'static str, Language>);
+
+impl Deref for LanguageExtensions {
+    type Target = HashMap<&'static str, Language>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for LanguageExtensions {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 impl Default for LanguageExtensions {
     fn default() -> Self {
         LanguageExtensions(
             [
                 ("lua", Language::Lua),
+                ("luau", Language::Lua),
                 ("rhai", Language::Rhai),
                 ("rn", Language::Rune),
             ]
@@ -435,6 +460,10 @@ impl ConfigureScriptAssetSettings for App {
 
 #[cfg(test)]
 mod test {
+    use bevy_asset::{AssetPlugin, AssetServer};
+    use bevy_ecs::prelude::*;
+    use bevy_reflect::Reflect;
+
     use super::*;
 
     #[tokio::test]
