@@ -1,66 +1,10 @@
 use std::fmt;
 
 use bevy_ecs::entity::Entity;
+use bevy_mod_scripting_display::DisplayProxy;
 
 use super::*;
 use crate::ScriptAsset;
-
-/// Specifies a unique attachment of a script. These attachments are mapped to [`ContextKey`]'s depending on the context policy used.
-#[derive(Debug, Hash, Clone, PartialEq, Eq, Reflect)]
-pub enum ScriptAttachment {
-    /// a script attached to an entity, with an optional domain. By default selecting a domain will put the context of this script on a per-domain basis.
-    EntityScript(Entity, Handle<ScriptAsset>),
-    /// a static script, with an optional domain. By default selecting a domain will put the context of this script on a per-domain basis.
-    StaticScript(Handle<ScriptAsset>),
-}
-
-impl std::fmt::Display for ScriptAttachment {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScriptAttachment::EntityScript(entity, script) => {
-                write!(
-                    f,
-                    "EntityScript(entity: {}, script: {})",
-                    entity,
-                    script.display(),
-                )
-            }
-            ScriptAttachment::StaticScript(script) => {
-                write!(f, "StaticScript(script: {})", script.display())
-            }
-        }
-    }
-}
-
-impl ScriptAttachment {
-    /// Returns the script handle if it exists.
-    pub fn script(&self) -> Handle<ScriptAsset> {
-        match self {
-            ScriptAttachment::EntityScript(_, script) => script.clone(),
-            ScriptAttachment::StaticScript(script) => script.clone(),
-        }
-    }
-
-    /// Returns the entity if it exists.
-    pub fn entity(&self) -> Option<Entity> {
-        match self {
-            ScriptAttachment::EntityScript(entity, _) => Some(*entity),
-            ScriptAttachment::StaticScript(_) => None,
-        }
-    }
-
-    /// Downcasts any script handles into weak handles.
-    pub fn into_weak(self) -> Self {
-        match self {
-            ScriptAttachment::EntityScript(entity, script) => {
-                ScriptAttachment::EntityScript(entity, script.clone_weak())
-            }
-            ScriptAttachment::StaticScript(script) => {
-                ScriptAttachment::StaticScript(script.clone_weak())
-            }
-        }
-    }
-}
 
 impl From<ScriptAttachment> for ContextKey {
     fn from(val: ScriptAttachment) -> Self {
@@ -111,7 +55,7 @@ impl fmt::Display for ContextKey {
 impl ContextKey {
     /// Creates an invalid context key, which should never exist.
     pub const INVALID: Self = Self {
-        entity: Some(Entity::from_raw(0)),
+        entity: Some(Entity::PLACEHOLDER),
         script: Some(Handle::Weak(AssetId::invalid())),
     };
 

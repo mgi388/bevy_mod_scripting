@@ -1,6 +1,7 @@
 use std::{hash::Hash, sync::Arc};
 
-use parking_lot::Mutex;
+use bevy_mod_scripting_script::ScriptAttachment;
+use parking_lot::{Mutex, RwLock};
 
 use super::*;
 use crate::IntoScriptPluginParams;
@@ -191,14 +192,46 @@ struct ContextEntry<P: IntoScriptPluginParams> {
 
 #[derive(Resource)]
 /// Keeps track of script contexts and enforces the context selection policy.
-pub struct ScriptContext<P: IntoScriptPluginParams> {
+pub struct ScriptContext<P: IntoScriptPluginParams>(Arc<RwLock<ScriptContextInner<P>>>);
+
+impl<P: IntoScriptPluginParams> ScriptContext<P> {
+    /// Construct a new ScriptContext with the given policy.
+    pub fn new(policy: ContextPolicy) -> Self {
+        Self(Arc::new(RwLock::new(ScriptContextInner::new(policy))))
+    }
+
+    /// Read the inner data with a read lock.
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, ScriptContextInner<P>> {
+        self.0.read()
+    }
+
+    /// Write to the inner data with a write lock.
+    pub fn write(&self) -> parking_lot::RwLockWriteGuard<'_, ScriptContextInner<P>> {
+        self.0.write()
+    }
+}
+
+impl<P: IntoScriptPluginParams> Clone for ScriptContext<P> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<P: IntoScriptPluginParams> Default for ScriptContext<P> {
+    fn default() -> Self {
+        Self::new(ContextPolicy::default())
+    }
+}
+
+/// Inner data carried by the Arc proxy in ScriptContext
+pub struct ScriptContextInner<P: IntoScriptPluginParams> {
     /// script contexts and the counts of how many scripts are associated with them.
     map: HashMap<ContextKey, ContextEntry<P>>,
     /// The policy used to determine the context key.
     pub policy: ContextPolicy,
 }
 
-impl<P: IntoScriptPluginParams> ScriptContext<P> {
+impl<P: IntoScriptPluginParams> ScriptContextInner<P> {
     /// Construct a new ScriptContext with the given policy.
     pub fn new(policy: ContextPolicy) -> Self {
         Self {
@@ -219,10 +252,84 @@ impl<P: IntoScriptPluginParams> ScriptContext<P> {
             .and_then(|key| self.map.get_mut(&key))
     }
 
-    /// Get the context.
-    pub fn get(&self, context_key: &ScriptAttachment) -> Option<Arc<Mutex<P::C>>> {
+    /// Get the context containing the attachment.
+    /// This is a weaker assertion than `get_resident`.
+    /// as it will return the context even if the attachment is not resident in it.
+    /// for example if sharing contexts and the attachment is not the first to create the context.
+    pub fn get_context(&self, context_key: &ScriptAttachment) -> Option<Arc<Mutex<P::C>>> {
         self.get_entry(context_key)
             .map(|entry| entry.context.clone())
+    }
+
+    /// Gets the context containing the attachment only if it is resident.
+    /// i.e. if `contains` would return true.
+    pub fn get_resident(&self, context_key: &ScriptAttachment) -> Option<Arc<Mutex<P::C>>> {
+        self.get_entry(context_key).and_then(|entry| {
+            if entry.residents.contains(context_key) {
+                Some(entry.context.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Get the context if it exists, and checks if the attachment is resident in it.
+    /// Returns `None` if no context exists for the attachment.
+    pub fn get_context_and_residency(
+        &self,
+        context_key: &ScriptAttachment,
+    ) -> (Option<Arc<Mutex<P::C>>>, bool) {
+        self.get_entry(context_key)
+            .map(|entry| {
+                (
+                    Some(entry.context.clone()),
+                    entry.residents.contains(context_key),
+                )
+            })
+            .unwrap_or((None, false))
+    }
+
+    /// Insert a context.
+    ///
+    /// If the context cannot be inserted, it is returned as an `Err`.
+    ///
+    /// If a context already exists at this key, it will be replaced, and a resident added
+    ///
+    /// The attachment is also inserted as resident into the context.
+    pub fn insert(
+        &mut self,
+        context_key: ScriptAttachment,
+        context: Arc<Mutex<P::C>>,
+    ) -> Result<(), (ScriptAttachment, Arc<Mutex<P::C>>)> {
+        match self.policy.select(&context_key) {
+            Some(key) => {
+                let entry = self
+                    .map
+                    .entry(key.into_weak())
+                    .or_insert_with(|| ContextEntry {
+                        context: context.clone(),
+                        residents: HashSet::from_iter([context_key.clone()]),
+                    });
+                entry.context = context;
+                entry.residents.insert(context_key.clone());
+
+                Ok(())
+            }
+            None => Err((context_key, context)),
+        }
+    }
+
+    /// Inserts an iterator of attachments and contexts.
+    ///
+    /// Returns an iterator of results.
+    pub fn insert_batch(
+        &mut self,
+        batch: impl IntoIterator<Item = (ScriptAttachment, Arc<Mutex<P::C>>)>,
+    ) -> impl Iterator<Item = Result<(), (ScriptAttachment, Arc<Mutex<P::C>>)>> {
+        // TODO: can we optimize this ?
+        batch
+            .into_iter()
+            .map(|(attachment, context)| self.insert(attachment, context))
     }
 
     /// Insert a context.
@@ -230,11 +337,15 @@ impl<P: IntoScriptPluginParams> ScriptContext<P> {
     /// If the context cannot be inserted, it is returned as an `Err`.
     ///
     /// The attachment is also inserted as resident into the context.
-    pub fn insert(&mut self, context_key: &ScriptAttachment, context: P::C) -> Result<(), P::C> {
+    pub fn insert_arc(
+        &mut self,
+        context_key: &ScriptAttachment,
+        context: Arc<Mutex<P::C>>,
+    ) -> Result<(), Arc<Mutex<P::C>>> {
         match self.policy.select(context_key) {
             Some(key) => {
                 let entry = ContextEntry {
-                    context: Arc::new(Mutex::new(context)),
+                    context,
                     residents: HashSet::from_iter([context_key.clone()]), // context with a residency of one
                 };
                 self.map.insert(key.into_weak(), entry);
@@ -280,6 +391,11 @@ impl<P: IntoScriptPluginParams> ScriptContext<P> {
         })
     }
 
+    /// Returns the count of residents as would be returned by [`Self::all_residents`]
+    pub fn all_residents_len(&self) -> usize {
+        self.map.values().map(|entry| entry.residents.len()).sum()
+    }
+
     /// Retrieves the first resident from each context.
     ///
     /// For example if using a single global context, and with 2 scripts:
@@ -317,7 +433,9 @@ impl<P: IntoScriptPluginParams> ScriptContext<P> {
             .map_or(0, |entry| entry.residents.len())
     }
 
-    /// Returns true if a context contains this given attachment
+    /// Returns true if a context contains this given attachment, note this is
+    /// different to `get` which returns true if the context simply exists.
+    /// i.e. `contains` checks if the attachment is resident in the context.
     pub fn contains(&self, context_key: &ScriptAttachment) -> bool {
         self.get_entry(context_key)
             .is_some_and(|entry| entry.residents.contains(context_key))
@@ -334,8 +452,8 @@ impl<P: IntoScriptPluginParams> ScriptContext<P> {
 }
 
 /// Use one script context per entity and script by default; see
-/// [ScriptContext::per_entity_and_script].
-impl<P: IntoScriptPluginParams> Default for ScriptContext<P> {
+/// [`ContextPolicy::per_entity_and_script`].
+impl<P: IntoScriptPluginParams> Default for ScriptContextInner<P> {
     fn default() -> Self {
         Self {
             map: HashMap::default(),
@@ -346,8 +464,10 @@ impl<P: IntoScriptPluginParams> Default for ScriptContext<P> {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::{GetPluginThreadConfig, ScriptingPluginConfiguration};
     use bevy_app::{App, Plugin};
     use bevy_asset::AssetIndex;
+    use bevy_mod_scripting_bindings::ScriptValue;
     use test_utils::make_test_plugin;
 
     use super::*;
@@ -358,7 +478,8 @@ mod tests {
     fn test_insertion_per_script_policy() {
         let policy = ContextPolicy::per_script();
 
-        let mut script_context = ScriptContext::<TestPlugin>::new(policy.clone());
+        let script_context = ScriptContext::<TestPlugin>::new(policy.clone());
+        let mut script_context = script_context.write();
         let context_key = ScriptAttachment::EntityScript(
             Entity::from_raw(1),
             Handle::Weak(AssetIndex::from_bits(1).into()),
@@ -370,14 +491,17 @@ mod tests {
         assert_eq!(policy.select(&context_key), policy.select(&context_key2));
 
         script_context
-            .insert(&context_key, TestContext::default())
+            .insert(
+                context_key.clone(),
+                Arc::new(Mutex::new(TestContext::default())),
+            )
             .unwrap();
 
         assert!(script_context.contains(&context_key));
         assert_eq!(script_context.residents_len(&context_key), 1);
         let resident = script_context.residents(&context_key).next().unwrap();
         assert_eq!(resident.0, context_key);
-        assert!(script_context.get(&context_key).is_some());
+        assert!(script_context.get_context(&context_key).is_some());
 
         // insert another into the same context
         assert!(

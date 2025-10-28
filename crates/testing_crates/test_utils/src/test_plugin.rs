@@ -18,6 +18,8 @@ macro_rules! make_test_plugin {
             }
         }
 
+        $ident::make_plugin_config_static!(TestPlugin);
+
         impl $ident::IntoScriptPluginParams for TestPlugin {
             type C = TestContext;
             type R = TestRuntime;
@@ -31,17 +33,19 @@ macro_rules! make_test_plugin {
             }
 
             fn handler() -> $ident::HandlerFn<Self> {
-                (|args, context_key, callback, script_ctxt, pre_handling_initializers, runtime| {
+                (|args, context_key, callback, script_ctxt, world_id| {
+                    let config = TestPlugin::readonly_configuration(world_id);
+                    let runtime = config.runtime;
                     runtime
                         .invocations
                         .lock()
                         .push((context_key.entity(), Some(context_key.script().id())));
-                    Ok($ident::bindings::script_value::ScriptValue::Unit)
+                    Ok(ScriptValue::Unit)
                 }) as $ident::HandlerFn<Self>
             }
 
             fn context_loader() -> $ident::ContextLoadFn<Self> {
-                (|attachment, content, context_initializers, pre_handling_initializers, runtime| {
+                (|attachment, content, world_id| {
                     Ok(TestContext {
                         invocations: vec![],
                     })
@@ -49,12 +53,7 @@ macro_rules! make_test_plugin {
             }
 
             fn context_reloader() -> $ident::ContextReloadFn<Self> {
-                (|attachment,
-                  content,
-                  previous_context,
-                  context_initializers,
-                  pre_handling_initializers,
-                  runtime| {
+                (|attachment, content, previous_context, world_id| {
                     previous_context.invocations.clear();
                     Ok(())
                 })
@@ -69,7 +68,7 @@ macro_rules! make_test_plugin {
 
         #[derive(Default, std::fmt::Debug, Clone)]
         struct TestContext {
-            pub invocations: Vec<$ident::bindings::script_value::ScriptValue>,
+            pub invocations: Vec<ScriptValue>,
         }
     };
 }

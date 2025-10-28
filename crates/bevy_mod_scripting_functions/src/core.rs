@@ -1,40 +1,31 @@
 //! Contains functions defined by the [`bevy_mod_scripting_core`] crate
 
+use bevy_mod_scripting_asset::ScriptAsset;
+use bevy_mod_scripting_script::ScriptAttachment;
 use bevy_platform::collections::HashMap;
 use std::ops::Deref;
 
 use bevy_app::App;
 use bevy_asset::{AssetServer, Handle};
 use bevy_ecs::{entity::Entity, prelude::AppTypeRegistry, schedule::Schedules, world::World};
-use bevy_mod_scripting_core::{
-    asset::ScriptAsset,
-    bindings::{
-        function::{
-            from::Union, namespace::GlobalNamespace, script_function::DynamicScriptFunctionMut,
-        },
-        script_system::ScriptSystemBuilder,
-    },
-    docgen::info::FunctionInfo,
-    script::ScriptAttachment,
-    *,
-};
-use bevy_mod_scripting_derive::script_bindings;
-use bevy_reflect::PartialReflect;
-use bevy_system_reflection::{ReflectSchedule, ReflectSystem};
-use bindings::{
-    ReflectReference, ScriptComponentRegistration, ScriptQueryBuilder, ScriptQueryResult,
-    ScriptResourceRegistration, ScriptTypeRegistration, ThreadWorldContainer, WorldContainer,
+use bevy_mod_scripting_bindings::{
+    DynamicScriptFunction, DynamicScriptFunctionMut, FunctionInfo, GlobalNamespace, InteropError,
+    PartialReflectExt, ReflectReference, ScriptComponentRegistration, ScriptQueryBuilder,
+    ScriptQueryResult, ScriptResourceRegistration, ScriptTypeRegistration, ThreadWorldContainer,
+    Union,
     function::{
         from::{Ref, Val},
         from_ref::FromScriptRef,
         into_ref::IntoScriptRef,
         script_function::{FunctionCallContext, ScriptFunctionMut},
     },
-    pretty_print::DisplayWithWorld,
     script_value::ScriptValue,
 };
-use error::InteropError;
-use reflection_extensions::{PartialReflectExt, TypeIdExtensions};
+use bevy_mod_scripting_core::script_system::{ManageScriptSystems, ScriptSystemBuilder};
+use bevy_mod_scripting_derive::script_bindings;
+use bevy_mod_scripting_display::{OrFakeId, WithTypeInfo};
+use bevy_reflect::PartialReflect;
+use bevy_system_reflection::{ReflectSchedule, ReflectSystem};
 
 #[allow(unused_variables, reason = "feature flags")]
 pub fn register_bevy_bindings(app: &mut App) {
@@ -86,7 +77,7 @@ pub fn register_bevy_bindings(app: &mut App) {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "world_functions",
     unregistered
 )]
@@ -144,7 +135,9 @@ impl World {
         };
 
         // do two things, check it actually exists
-        world.scope_schedule(&schedule, |world, schedule| schedule.initialize(world))??;
+        world
+            .scope_schedule(&schedule, |world, schedule| schedule.initialize(world))?
+            .map_err(InteropError::external)?;
 
         Ok(Some(schedule.into()))
     }
@@ -458,17 +451,18 @@ impl World {
         let _world = ctxt.world()?;
         let _system = match ctxt.language() {
             #[cfg(feature = "lua_bindings")]
-            asset::Language::Lua => _world
+            bevy_mod_scripting_asset::Language::Lua => _world
                 .add_system::<bevy_mod_scripting_lua::LuaScriptingPlugin>(
-                    &schedule,
-                    builder.into_inner(),
-                )?,
+                &schedule,
+                builder.into_inner(),
+            )?,
             #[cfg(feature = "rhai_bindings")]
-            asset::Language::Rhai => _world
-                .add_system::<bevy_mod_scripting_rhai::RhaiScriptingPlugin>(
+            bevy_mod_scripting_asset::Language::Rhai => {
+                _world.add_system::<bevy_mod_scripting_rhai::RhaiScriptingPlugin>(
                     &schedule,
                     builder.into_inner(),
-                )?,
+                )?
+            }
             _ => {
                 return Err(InteropError::unsupported_operation(
                     None,
@@ -516,11 +510,44 @@ impl World {
         let world = ctxt.world()?;
         world.register_script_component(name).map(Val)
     }
+
+    /// Retrieves an asset by its handle and asset type registration.
+    ///
+    /// Arguments:
+    /// * `ctxt`: The function call context.
+    /// * `handle_reference`: The handle to the asset (as a reflect reference).
+    /// * `registration`: The type registration of the asset type.
+    /// Returns:
+    /// * `asset`: The asset reference, if the asset is loaded.
+    fn get_asset(
+        ctxt: FunctionCallContext,
+        handle_reference: ReflectReference,
+        registration: Val<ScriptTypeRegistration>,
+    ) -> Result<Option<ReflectReference>, InteropError> {
+        profiling::function_scope!("get_asset");
+        let untyped_handle = handle_reference.try_untyped_asset_handle(ctxt.world()?)?;
+        Ok(Some(ReflectReference::new_asset_ref(
+            untyped_handle,
+            registration.type_id(),
+            ctxt.world()?,
+        )?))
+    }
+
+    /// Checks if can get asset handle
+    fn has_asset(
+        ctxt: FunctionCallContext,
+        handle_reference: ReflectReference,
+    ) -> Result<bool, InteropError> {
+        profiling::function_scope!("has_asset");
+        Ok(handle_reference
+            .try_untyped_asset_handle(ctxt.world()?)
+            .is_ok())
+    }
 }
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "reflect_reference_functions",
     core
 )]
@@ -541,7 +568,7 @@ impl ReflectReference {
         reference.variant_name(world)
     }
 
-    /// Displays this reference without printing the exact contents.
+    /// Displays this reference and its contents if possible.
     ///
     /// This is useful for debugging and logging.
     ///
@@ -550,16 +577,15 @@ impl ReflectReference {
     /// * `reference`: The reference to display.
     /// Returns:
     /// * `display`: The display string.
-    fn display_ref(
-        ctxt: FunctionCallContext,
+    fn display(
+        _ctxt: FunctionCallContext,
         reference: ReflectReference,
     ) -> Result<String, InteropError> {
-        profiling::function_scope!("display_ref");
-        let world = ctxt.world()?;
-        Ok(reference.display_with_world(world))
+        profiling::function_scope!("display");
+        Ok(format!("{}", WithTypeInfo::new(&reference)))
     }
 
-    /// Displays the "value" of this reference
+    /// Displays a debug representation of this reference.
     ///
     /// This is useful for debugging and logging.
     ///
@@ -568,13 +594,12 @@ impl ReflectReference {
     /// * `reference`: The reference to display.
     /// Returns:
     /// * `display`: The display string.
-    fn display_value(
-        ctxt: FunctionCallContext,
+    fn debug(
+        _ctxt: FunctionCallContext,
         reference: ReflectReference,
     ) -> Result<String, InteropError> {
-        profiling::function_scope!("display_value");
-        let world = ctxt.world()?;
-        Ok(reference.display_value_with_world(world))
+        profiling::function_scope!("debug");
+        Ok(format!("{reference:#?}"))
     }
 
     /// Gets and clones the value under the specified key if the underlying type is a map type.
@@ -805,7 +830,7 @@ impl ReflectReference {
         let iter_function = move || {
             // world is not thread safe, we can't capture it in the closure
             // or it will also be non-thread safe
-            let world = ThreadWorldContainer.try_get_world()?;
+            let world = ThreadWorldContainer.try_get_context()?.world;
             if len == 0 {
                 return Ok(ScriptValue::Unit);
             }
@@ -848,7 +873,7 @@ impl ReflectReference {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_type_registration_functions",
     core
 )]
@@ -878,7 +903,7 @@ impl ScriptTypeRegistration {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_component_registration_functions",
     core
 )]
@@ -908,7 +933,7 @@ impl ScriptComponentRegistration {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_resource_registration_functions",
     core
 )]
@@ -938,7 +963,7 @@ impl ScriptResourceRegistration {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_query_builder_functions",
     core
 )]
@@ -1016,7 +1041,7 @@ impl ScriptQueryBuilder {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_query_result_functions",
     core
 )]
@@ -1048,7 +1073,7 @@ impl ScriptQueryResult {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "reflect_schedule_functions",
     core
 )]
@@ -1120,7 +1145,7 @@ impl ReflectSchedule {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "reflect_system_functions",
     core
 )]
@@ -1148,7 +1173,7 @@ impl ReflectSystem {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_system_builder_functions",
     core
 )]
@@ -1240,7 +1265,7 @@ impl ScriptSystemBuilder {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_attachment_functions",
     core
 )]
@@ -1279,7 +1304,7 @@ impl ScriptAttachment {
 
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "script_handle_functions",
     core
 )]
@@ -1305,9 +1330,51 @@ impl Handle<ScriptAsset> {
     }
 }
 
+/// globals which are being registered at lower level within each language plugin.
 #[script_bindings(
     remote,
-    bms_core_path = "bevy_mod_scripting_core",
+    bms_bindings_path = "bevy_mod_scripting_bindings",
+    name = "global_namespace_dummy_functions",
+    unregistered,
+    use_dummy_registry
+)]
+impl GlobalNamespace {
+    /// Registers a "frozen" callback handler,
+    ///
+    /// For example, this code:
+    ///
+    /// ```lua
+    /// register_callback("on_script_unloaded", my_unload_handler)
+    ///
+    /// function my_unload_handler()
+    ///     print("handling unload!")
+    /// end
+    /// ```
+    ///
+    /// would call the `my_unload_handler` function, whenever the `on_script_unloaded` callback is triggered, which is when your script is about to be unloaded.
+    ///
+    /// Registered callbacks take precedence over free-standing function callbacks, i.e. the below top level function:
+    /// ```lua
+    /// function on_script_unloaded()
+    ///     print("freestanding unload handler!")
+    /// end
+    /// ```
+    ///
+    /// would be a valid handler, but if a registered callback existed, it would be called instead.
+    ///
+    /// Arguments:
+    /// * `callback`: the callback label to register this function against.
+    /// * `function`: the callback function which will be stored as a handler for this callback label.
+    fn register_callback(callback: String, function: DynamicScriptFunction) {
+        // to avoid clippy unused errors.
+        println!("dummy called!: {callback:?}, {function:?}");
+    }
+}
+
+/// Globals registered by us
+#[script_bindings(
+    remote,
+    bms_bindings_path = "bevy_mod_scripting_bindings",
     name = "global_namespace_functions",
     unregistered
 )]
@@ -1397,5 +1464,6 @@ pub fn register_core_functions(app: &mut App) {
         register_script_handle_functions(world);
 
         register_global_namespace_functions(world);
+        register_global_namespace_dummy_functions(world);
     }
 }

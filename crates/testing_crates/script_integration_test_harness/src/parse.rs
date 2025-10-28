@@ -1,16 +1,17 @@
 use std::path::PathBuf;
 
 use anyhow::Error;
+use bevy_mod_scripting_asset::Language;
+use bevy_mod_scripting_bindings::ScriptValue;
 use bevy_mod_scripting_core::{
-    asset::Language,
-    bindings::ScriptValue,
     callback_labels,
     event::{
         CallbackLabel, OnScriptLoaded, OnScriptReloaded, OnScriptUnloaded, Recipients,
         ScriptCallbackEvent,
     },
-    script::{ContextPolicy, ScriptAttachment},
+    script::ContextPolicy,
 };
+use bevy_mod_scripting_script::ScriptAttachment;
 
 use crate::scenario::{SCENARIO_SELF_LANGUAGE_NAME, ScenarioContext, ScenarioStep};
 
@@ -50,6 +51,7 @@ pub enum ScenarioStepSerialized {
     InstallPlugin {
         context_policy: Option<ContextMode>,
         emit_responses: Option<bool>,
+        miliseconds_budget: Option<u64>,
     },
     /// Called after the app config is set up, but before we run anything
     FinalizeApp,
@@ -180,9 +182,10 @@ impl ScenarioStepSerialized {
         match language {
             ScenarioLanguage::Lua => Language::Lua,
             ScenarioLanguage::Rhai => Language::Rhai,
-            ScenarioLanguage::ThisScriptLanguage => {
-                Language::External(SCENARIO_SELF_LANGUAGE_NAME.into())
-            }
+            ScenarioLanguage::ThisScriptLanguage => Language::External {
+                name: SCENARIO_SELF_LANGUAGE_NAME.into(),
+                one_indexed: false,
+            },
         }
     }
 
@@ -265,9 +268,11 @@ impl ScenarioStepSerialized {
             Self::InstallPlugin {
                 context_policy,
                 emit_responses,
+                miliseconds_budget,
             } => ScenarioStep::InstallPlugin {
                 context_policy: Self::resolve_context_policy(context_policy),
                 emit_responses: emit_responses.unwrap_or(false),
+                miliseconds_budget,
             },
             Self::DropScriptAsset { script } => ScenarioStep::DropScriptAsset {
                 script: context.get_script_handle(&script)?,
@@ -380,7 +385,7 @@ impl ScenarioStepSerialized {
         let mut parts = flat_string.split_whitespace();
         let step_name = parts
             .next()
-            .ok_or_else(|| anyhow::anyhow!("Invalid flat string step: `{}`", flat_string))?;
+            .ok_or_else(|| anyhow::anyhow!("Invalid flat string step: `{flat_string}`"))?;
         let mut map = serde_json::Map::new();
         map.insert(
             "step".to_string(),

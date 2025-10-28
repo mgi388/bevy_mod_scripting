@@ -3,13 +3,15 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use bevy_mod_scripting_core::{
-    asset::Language,
-    bindings::{function::script_function::FunctionCallContext, script_value::ScriptValue},
-    error::InteropError,
+use bevy_mod_scripting_asset::Language;
+use bevy_mod_scripting_bindings::{
+    LocationContext, error::InteropError, function::script_function::FunctionCallContext,
+    script_value::ScriptValue,
 };
 use bevy_platform::collections::HashMap;
 use mlua::{FromLua, IntoLua, Value, Variadic};
+
+use crate::{IntoMluaError, LuaContextAppData};
 
 use super::reference::LuaReflectReference;
 
@@ -64,7 +66,7 @@ impl FromLua for LuaScriptValue {
                             .collect::<Variadic<_>>(),
                     ) {
                         Ok(v) => v.0,
-                        Err(e) => ScriptValue::Error(InteropError::external_error(Box::new(e))),
+                        Err(e) => ScriptValue::Error(InteropError::external(Box::new(e))),
                     }
                 })
                 .into(),
@@ -139,17 +141,45 @@ impl IntoLua for LuaScriptValue {
             ScriptValue::Reference(r) => LuaReflectReference::from(r).into_lua(lua)?,
             ScriptValue::Error(script_error) => return Err(mlua::Error::external(script_error)),
             ScriptValue::Function(function) => lua
-                .create_function(move |_lua, args: Variadic<LuaScriptValue>| {
-                    let out =
-                        function.call(args.into_iter().map(Into::into), LUA_CALLER_CONTEXT)?;
+                .create_function(move |lua, args: Variadic<LuaScriptValue>| {
+                    let loc = {
+                        profiling::scope!("function call context");
+                        lua.inspect_stack(1).map(|debug| LocationContext {
+                            line: debug.curr_line().try_into().unwrap_or_default(),
+                            col: None,
+                            script_name: lua.app_data_ref::<LuaContextAppData>().and_then(|v| {
+                                v.last_loaded_script_name.as_ref().map(|n| n.to_string())
+                            }),
+                        })
+                    };
+                    let out = function
+                        .call(
+                            args.into_iter().map(Into::into),
+                            FunctionCallContext::new_with_location(Language::Lua, loc),
+                        )
+                        .map_err(IntoMluaError::to_lua_error)?;
 
                     Ok(LuaScriptValue::from(out))
                 })?
                 .into_lua(lua)?,
             ScriptValue::FunctionMut(function) => lua
-                .create_function(move |_lua, args: Variadic<LuaScriptValue>| {
-                    let out =
-                        function.call(args.into_iter().map(Into::into), LUA_CALLER_CONTEXT)?;
+                .create_function(move |lua, args: Variadic<LuaScriptValue>| {
+                    let loc = {
+                        profiling::scope!("function call context");
+                        lua.inspect_stack(1).map(|debug| LocationContext {
+                            line: debug.curr_line().try_into().unwrap_or_default(),
+                            col: None,
+                            script_name: lua.app_data_ref::<LuaContextAppData>().and_then(|v| {
+                                v.last_loaded_script_name.as_ref().map(|n| n.to_string())
+                            }),
+                        })
+                    };
+                    let out = function
+                        .call(
+                            args.into_iter().map(Into::into),
+                            FunctionCallContext::new_with_location(Language::Lua, loc),
+                        )
+                        .map_err(IntoMluaError::to_lua_error)?;
 
                     Ok(LuaScriptValue::from(out))
                 })?

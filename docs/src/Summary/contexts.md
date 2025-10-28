@@ -11,7 +11,14 @@ To enable a shared context, set the corresponding context policy on the scriptin
 ```rust,ignore
 app.add_plugins(LuaScriptingPlugin::default().set_context_policy(
     ContextPolicy::shared(),
-));```
+));
+```
+
+<div class="warning">
+
+Shared contexts require your scripts to be more careful about how they register callbacks due to the nature of top level functions belonging to the "currently loaded" global script. See [the callbacks section](./callbacks.md)
+
+</div>
 
 ### Per Script Context
 A per script context provides each script with their own context. However, scripts may be attached to multiple entities, in which case a single script context is shared by multiple entities. 
@@ -20,7 +27,8 @@ To enable per script contexts, insert the `ContextPolicy::per_script()` resource
 ```rust,ignore
 app.add_plugins(LuaScriptingPlugin::default().set_context_policy(
     ContextPolicy::per_script(),
-));```
+));
+```
 
 ### Per Entity Context
 A per entity context provides each entity with their own context. The scripts attached to an entity via `ScriptComponent` all run in the same context.
@@ -29,7 +37,8 @@ To enable per entity contexts, insert the `ContextPolicy::per_entity()` resource
 ```rust,ignore
 app.add_plugins(LuaScriptingPlugin::default().set_context_policy(
     ContextPolicy::per_entity(),
-));```
+));
+```
 
 ### Per Entity and Script Context
 A per entity-and-script context provides each entity-script pair with their own context. This is a maximally isolated way to run scripts.

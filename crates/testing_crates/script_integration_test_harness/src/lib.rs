@@ -20,18 +20,22 @@ use ::{
     },
     bevy_reflect::Reflect,
 };
+use bevy_asset::Assets;
+use bevy_mod_scripting_asset::ScriptAsset;
+use bevy_mod_scripting_bindings::{
+    CoreScriptGlobalsPlugin, ReflectAccessId, ThreadScriptContext, ThreadWorldContainer,
+    WorldAccessGuard, WorldGuard,
+};
 use bevy_mod_scripting_core::{
     BMSScriptingInfrastructurePlugin, IntoScriptPluginParams,
-    bindings::{
-        CoreScriptGlobalsPlugin, ReflectAccessId, WorldAccessGuard, WorldGuard,
-        pretty_print::DisplayWithWorld,
-    },
-    commands::CreateOrUpdateScript,
+    commands::AttachScript,
     error::ScriptError,
-    extractors::HandlerContext,
-    script::{DisplayProxy, ScriptAttachment, ScriptComponent, ScriptId},
+    pipeline::PipelineRun,
+    script::{ScriptComponent, ScriptContext},
 };
+use bevy_mod_scripting_display::DisplayProxy;
 use bevy_mod_scripting_functions::ScriptFunctionsPlugin;
+use bevy_mod_scripting_script::ScriptAttachment;
 use criterion::{BatchSize, measurement::Measurement};
 use rand::{Rng, SeedableRng};
 use test_functions::{RNG, register_test_functions};
@@ -48,7 +52,7 @@ pub fn install_test_plugin(app: &mut App, include_test_functions: bool) {
     app.add_plugins((
         ScriptFunctionsPlugin,
         CoreScriptGlobalsPlugin::default(),
-        BMSScriptingInfrastructurePlugin,
+        BMSScriptingInfrastructurePlugin::default(),
     ));
     if include_test_functions {
         register_test_functions(app);
@@ -65,39 +69,47 @@ pub fn install_test_plugin(app: &mut App, include_test_functions: bool) {
 
 #[cfg(feature = "lua")]
 pub fn make_test_lua_plugin() -> bevy_mod_scripting_lua::LuaScriptingPlugin {
-    use bevy_mod_scripting_core::{ConfigureScriptPlugin, bindings::WorldContainer};
+    use bevy_mod_scripting_core::ConfigureScriptPlugin;
     use bevy_mod_scripting_lua::{LuaScriptingPlugin, mlua};
 
     LuaScriptingPlugin::default().add_context_initializer(
-        |_, ctxt: &mut bevy_mod_scripting_lua::mlua::Lua| {
-            let globals = ctxt.globals();
-            globals.set(
-                "assert_throws",
-                ctxt.create_function(|_lua, (f, reg): (mlua::Function, String)| {
-                    let world =
-                        bevy_mod_scripting_core::bindings::ThreadWorldContainer.try_get_world()?;
-                    let result = f.call::<()>(mlua::MultiValue::new());
-                    let err = match result {
-                        Ok(_) => {
-                            return Err(mlua::Error::external(
-                                "Expected function to throw error, but it did not.",
-                            ));
-                        }
-                        Err(e) => ScriptError::from_mlua_error(e).display_with_world(world),
-                    };
+        |_, ctxt: &mut bevy_mod_scripting_lua::LuaContext| {
+            use bevy_mod_scripting_lua::IntoInteropError;
 
-                    let regex = regex::Regex::new(&reg).unwrap();
-                    if regex.is_match(&err) {
-                        Ok(())
-                    } else {
-                        Err(mlua::Error::external(format!(
-                            "Expected error message to match the regex: \n{}\n\nBut got:\n{}",
-                            regex.as_str(),
-                            err
-                        )))
-                    }
-                })?,
-            )?;
+            let globals = ctxt.globals();
+            globals
+                .set(
+                    "assert_throws",
+                    ctxt.create_function(|_lua, (f, reg): (mlua::Function, String)| {
+                        let result = f.call::<()>(mlua::MultiValue::new());
+                        let err = match result {
+                            Ok(_) => {
+                                return Err(mlua::Error::external(
+                                    "Expected function to throw error, but it did not.",
+                                ));
+                            }
+                            Err(e) => format!(
+                                "{}",
+                                ScriptError::from(
+                                    bevy_mod_scripting_lua::IntoInteropError::to_bms_error(e),
+                                )
+                            ),
+                        };
+
+                        let regex = regex::Regex::new(&reg).unwrap();
+                        if regex.is_match(&err) {
+                            Ok(())
+                        } else {
+                            Err(mlua::Error::external(format!(
+                                "Expected error message to match the regex: \n{}\n\nBut got:\n{}",
+                                regex.as_str(),
+                                err
+                            )))
+                        }
+                    })
+                    .map_err(IntoInteropError::to_bms_error)?,
+                )
+                .map_err(IntoInteropError::to_bms_error)?;
             Ok(())
         },
     )
@@ -105,10 +117,7 @@ pub fn make_test_lua_plugin() -> bevy_mod_scripting_lua::LuaScriptingPlugin {
 
 #[cfg(feature = "rhai")]
 pub fn make_test_rhai_plugin() -> bevy_mod_scripting_rhai::RhaiScriptingPlugin {
-    use bevy_mod_scripting_core::{
-        ConfigureScriptPlugin,
-        bindings::{ThreadWorldContainer, WorldContainer},
-    };
+    use bevy_mod_scripting_core::ConfigureScriptPlugin;
     use bevy_mod_scripting_rhai::{
         RhaiScriptingPlugin,
         rhai::{Dynamic, EvalAltResult, FnPtr, NativeCallContext},
@@ -137,14 +146,15 @@ pub fn make_test_rhai_plugin() -> bevy_mod_scripting_rhai::RhaiScriptingPlugin {
         runtime.register_fn(
             "assert_throws",
             |ctxt: NativeCallContext, fn_: FnPtr, regex: String| {
-                let world = ThreadWorldContainer.try_get_world()?;
                 let args: [Dynamic; 0] = [];
                 let result = fn_.call_within_context::<()>(&ctxt, args);
                 match result {
                     Ok(_) => panic!("Expected function to throw error, but it did not."),
                     Err(e) => {
-                        let e = ScriptError::from_rhai_error(*e);
-                        let err = e.display_with_world(world);
+                        use bevy_mod_scripting_rhai::IntoInteropError;
+
+                        let e = ScriptError::from(e.into_bms_error());
+                        let err = format!("{e}");
                         let regex = regex::Regex::new(&regex).unwrap();
                         if regex.is_match(&err) {
                             Ok::<(), Box<EvalAltResult>>(())
@@ -263,10 +273,6 @@ where
     P: IntoScriptPluginParams + Plugin,
     F: Fn(&mut P::C, &P::R, &str, &mut criterion::BenchmarkGroup<M>) -> Result<(), String>,
 {
-    use bevy_mod_scripting_core::bindings::{
-        ThreadWorldContainer, WorldAccessGuard, WorldContainer,
-    };
-
     let mut app = setup_integration_test(|_, _| {});
 
     install_test_plugin(&mut app, true);
@@ -304,71 +310,73 @@ where
         }
     }
 
-    app.update();
+    app.update_until_all_scripts_processed::<P>();
 
-    let mut context = HandlerContext::<P>::yoink(app.world_mut());
+    let script_contexts = app
+        .world_mut()
+        .get_resource_or_init::<ScriptContext<P>>()
+        .clone();
     let guard = WorldGuard::new_exclusive(app.world_mut());
 
     let context_key = ScriptAttachment::EntityScript(entity, Handle::Weak(script_id));
 
-    let ctxt_arc = context.script_context().get(&context_key).unwrap();
+    let script_contexts = script_contexts.read();
+    let ctxt_arc = script_contexts.get_context(&context_key).unwrap();
+    drop(script_contexts);
     let mut ctxt_locked = ctxt_arc.lock();
 
-    let runtime = &context.runtime_container().runtime;
+    let runtime = P::readonly_configuration(guard.id()).runtime;
 
     let _ = WorldAccessGuard::with_existing_static_guard(guard, |guard| {
         // Ensure the world is available via ThreadWorldContainer
         ThreadWorldContainer
-            .set_world(guard.clone())
-            .map_err(|e| e.display_with_world(guard))?;
+            .set_context(ThreadScriptContext {
+                world: guard.clone(),
+                attachment: ScriptAttachment::StaticScript(Handle::Weak(script_id)),
+            })
+            .map_err(|e| format!("{e:#?}"))?;
         // Pass the locked context to the closure for benchmarking its Lua (or generic) part
         bench_fn(&mut ctxt_locked, runtime, label, criterion)
     });
-    context.release(app.world_mut());
     Ok(())
 }
 
 pub fn run_plugin_script_load_benchmark<
     P: IntoScriptPluginParams + Plugin + FromWorld,
+    F: Fn() -> P,
     M: Measurement,
 >(
-    plugin: P,
+    plugin_maker: F,
     benchmark_id: &str,
     content: &str,
     criterion: &mut criterion::BenchmarkGroup<M>,
-    reload_probability: f32,
 ) {
-    let mut app = setup_integration_test(|_, _| {});
-    install_test_plugin(&mut app, false);
-    app.add_plugins(plugin);
-    let mut rng_guard = RNG.lock().unwrap();
-    *rng_guard = rand_chacha::ChaCha12Rng::from_seed([42u8; 32]);
-    drop(rng_guard);
+    let content_boxed = content.to_string().into_bytes().into_boxed_slice();
+
     criterion.bench_function(benchmark_id, |c| {
         c.iter_batched(
             || {
-                let mut rng = RNG.lock().unwrap();
-                let is_reload = rng.random_range(0f32..=1f32) < reload_probability;
-                let random_id = if is_reload { 0 } else { rng.random::<u128>() };
-                let random_script_id: ScriptId = ScriptId::from(
-                    uuid::Builder::from_random_bytes(random_id.to_le_bytes()).into_uuid(),
-                );
+                let mut app = setup_integration_test(|_, _| {});
+                install_test_plugin(&mut app, false);
+                app.add_plugins(plugin_maker());
+
+                // Safety: we claimed a unique guard, only code accessing this will need to do the same
+                let world = app.world_mut();
+                let mut assets = world.get_resource_or_init::<Assets<ScriptAsset>>();
+
+                let id = assets.add(ScriptAsset {
+                    content: content_boxed.clone(),
+                    language: P::LANGUAGE,
+                });
+
                 // We manually load the script inside a command.
                 (
-                    CreateOrUpdateScript::<P>::new(ScriptAttachment::StaticScript(Handle::Weak(
-                        random_script_id,
-                    )))
-                    .with_content(content),
-                    is_reload,
+                    app,
+                    AttachScript::<P>::new(ScriptAttachment::StaticScript(id)),
                 )
             },
-            |(command, _is_reload)| {
-                tracing::event!(
-                    Level::TRACE,
-                    "profiling_iter {} is reload?: {}",
-                    benchmark_id,
-                    _is_reload
-                );
+            |(mut app, command)| {
+                tracing::event!(Level::TRACE, "profiling_iter {}", benchmark_id);
                 command.apply(app.world_mut());
             },
             BatchSize::LargeInput,

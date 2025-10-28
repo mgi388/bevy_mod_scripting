@@ -1,4 +1,7 @@
-use std::{alloc::Layout, collections::HashMap};
+use std::{
+    alloc::Layout,
+    collections::{HashMap, HashSet},
+};
 
 use bevy_app::{App, ScheduleRunnerPlugin, TaskPoolPlugin};
 use bevy_diagnostic::FrameCountPlugin;
@@ -6,7 +9,7 @@ use bevy_log::LogPlugin;
 use bevy_time::TimePlugin;
 
 use ::{
-    bevy_asset::AssetPlugin,
+    bevy_asset::{Asset, AssetApp, AssetPlugin},
     bevy_diagnostic::DiagnosticsPlugin,
     bevy_ecs::{component::*, prelude::*, world::World},
     bevy_reflect::{prelude::*, *},
@@ -24,6 +27,33 @@ impl TestComponent {
         Self {
             strings: vec!["Initial".to_string(), "Value".to_string()],
         }
+    }
+}
+
+/// Test component with Reflect and ReflectComponent registered
+#[derive(Resource, Reflect, PartialEq, Eq, Debug, Hash)]
+#[reflect(Resource)]
+pub struct SimpleType {
+    pub inner: String,
+}
+
+impl SimpleType {
+    pub fn init() -> Self {
+        Self {
+            inner: String::from("initial"),
+        }
+    }
+}
+
+#[derive(Asset, Reflect, PartialEq, Debug, Clone)]
+pub struct TestAsset {
+    pub value: i32,
+    pub name: String,
+}
+
+impl TestAsset {
+    pub fn new(value: i32, name: String) -> Self {
+        Self { value, name }
     }
 }
 
@@ -146,6 +176,8 @@ pub struct TestResourceWithVariousFields {
     pub bool: bool,
     pub vec_usize: Vec<usize>,
     pub string_map: HashMap<String, String>,
+    pub string_set: HashSet<String>,
+    pub simple_type_map: HashMap<SimpleType, String>,
 }
 
 impl TestResourceWithVariousFields {
@@ -157,10 +189,30 @@ impl TestResourceWithVariousFields {
             float: 69.0,
             bool: true,
             vec_usize: vec![1, 2, 3, 4, 5],
-            string_map: vec![("foo", "bar"), ("zoo", "zed")]
-                .into_iter()
-                .map(|(a, b)| (a.to_owned(), b.to_owned()))
-                .collect(),
+            string_map: HashMap::from_iter(vec![
+                (String::from("foo"), String::from("bar")),
+                (String::from("zoo"), String::from("zed")),
+            ]),
+            string_set: HashSet::from_iter(vec![
+                String::from("foo"),
+                String::from("bar"),
+                String::from("zoo"),
+                String::from("zed"),
+            ]),
+            simple_type_map: HashMap::from_iter(vec![
+                (
+                    SimpleType {
+                        inner: String::from("foo"),
+                    },
+                    String::from("bar"),
+                ),
+                (
+                    SimpleType {
+                        inner: String::from("zoo"),
+                    },
+                    String::from("zed"),
+                ),
+            ]),
         }
     }
 }
@@ -302,6 +354,7 @@ impl_test_component_ids!(
         TestResource => 10,
         ResourceWithDefault => 11,
         TestResourceWithVariousFields => 12,
+        SimpleType => 13
     ]
 );
 
@@ -361,6 +414,10 @@ pub fn setup_integration_test<F: FnOnce(&mut World, &mut TypeRegistry)>(init: F)
             ..Default::default()
         },
     ));
+
+    app.init_asset::<TestAsset>();
+    app.register_asset_reflect::<TestAsset>();
+
     app
 }
 
