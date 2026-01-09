@@ -17,8 +17,6 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# if enabled enables documentation updating in optimized builds
-doc_always = []
 
 
 [dependencies]
@@ -35,6 +33,7 @@ bevy_log = { workspace = true, default-features = false, features = [] }
 bevy_asset = { workspace = true, default-features = false, features = [] }
 bevy_diagnostic = { workspace = true, default-features = false, features = [] }
 bevy_platform = { workspace = true, default-features = false, features = [] }
+bevy_utils = { workspace = true }
 
 parking_lot = { workspace = true }
 smallvec = { workspace = true }
